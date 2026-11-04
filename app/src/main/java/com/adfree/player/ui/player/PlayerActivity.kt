@@ -495,7 +495,10 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         retrieverLock.withLock {
             runCatching {
                 val r = retriever ?: MediaMetadataRetriever().also {
-                    it.setDataSource(this@PlayerActivity, videoUri)
+                    // File descriptor works on more phones than a content Uri.
+                    runCatching {
+                        contentResolver.openFileDescriptor(videoUri, "r")!!.use { fd -> it.setDataSource(fd.fileDescriptor) }
+                    }.getOrElse { _ -> it.setDataSource(this@PlayerActivity, videoUri) }
                     retriever = it
                 }
                 val us = ms * 1000

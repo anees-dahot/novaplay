@@ -79,9 +79,22 @@ object VideoRepository {
                     MediaStore.Video.Thumbnails.MINI_KIND, null,
                 )
             }
-        }.getOrNull()
+        }.getOrNull() ?: frameFallback(context, video)
         bmp?.also { thumbCache.put(video.id, it) }
     }
+
+    /** Some phones can't thumbnail MKV/HEVC; grab a frame directly instead. */
+    private fun frameFallback(context: Context, video: Video): Bitmap? = runCatching {
+        context.contentResolver.openFileDescriptor(video.uri, "r")!!.use { pfd ->
+            val r = android.media.MediaMetadataRetriever()
+            try {
+                r.setDataSource(pfd.fileDescriptor)
+                val at = (video.durationMs / 10).coerceAtLeast(1000) * 1000
+                val f = r.getFrameAtTime(at, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return@use null
+                Bitmap.createScaledBitmap(f, 320, (320f * f.height / f.width).toInt().coerceAtLeast(1), true)
+            } finally { r.release() }
+        }
+    }.getOrNull()
 }
 
 /** Remembers where you stopped watching each video. */

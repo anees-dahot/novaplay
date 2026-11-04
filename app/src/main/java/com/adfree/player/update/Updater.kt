@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +36,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class Release(val version: String, val notes: String, val apkUrl: String)
+data class Release(val version: String, val notes: String, val apkUrl: String, val size: Long)
 
 /** Checks GitHub Releases for a newer NovaPlay and installs it. */
 object Updater {
@@ -65,7 +66,7 @@ object Updater {
                 ?: names.firstOrNull { it.getString("name").contains("universal") }
                 ?: names.firstOrNull()
                 ?: return@runCatching null
-            Release(version, json.optString("body"), asset.getString("browser_download_url"))
+            Release(version, json.optString("body"), asset.getString("browser_download_url"), asset.optLong("size"))
         }.getOrNull()
     }
 
@@ -87,7 +88,7 @@ object Updater {
             dir.listFiles()?.forEach { it.delete() }
             val file = File(dir, "NovaPlay-${release.version}.apk")
             val conn = open(release.apkUrl).apply { instanceFollowRedirects = true }
-            val total = conn.contentLengthLong
+            val total = conn.contentLengthLong.takeIf { it > 0 } ?: release.size
             conn.inputStream.use { input ->
                 file.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
@@ -144,9 +145,15 @@ fun UpdatePrompt() {
                 if (progress >= 0 && apk == null) {
                     LinearProgressIndicator(
                         progress = { progress },
-                        modifier = Modifier.padding(top = 16.dp),
+                        modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
+                    )
+                    val mb = r.size / 1_048_576f
+                    Text(
+                        "Downloading… ${(progress * 100).toInt()}%  ·  %.1f of %.1f MB".format(progress * mb, mb),
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
+                if (apk != null) Text("Downloaded. Tap Install.", modifier = Modifier.padding(top = 8.dp))
                 error?.let { Text(it, modifier = Modifier.padding(top = 8.dp)) }
             }
         },

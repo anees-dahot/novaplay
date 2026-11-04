@@ -32,9 +32,9 @@ class MainActivity : ComponentActivity() {
 }
 
 val Accent = Color(0xFF0A84FF)      // system blue accent
-val Navy = Color(0xFF0A1428)        // app background
-val NavySurface = Color(0xFF132341) // cards, bars, dialogs
-val NavyHigh = Color(0xFF1B2F55)    // raised elements / thumb placeholders
+val Navy = Color(0xFF05080F)        // app background
+val NavySurface = Color(0xFF0F1B33) // cards, bars, dialogs
+val NavyHigh = Color(0xFF17284A)    // raised elements / thumb placeholders
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
