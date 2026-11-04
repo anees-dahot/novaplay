@@ -7,7 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,9 +54,11 @@ fun Modifier.glass(shape: Shape = RoundedCornerShape(50)): Modifier =
  * Tap target that responds on press-down (scale + dim), not on release,
  * and fires a light haptic on commit.
  */
+@OptIn(ExperimentalFoundationApi::class)
 fun Modifier.pressable(
     haptic: Boolean = true,
     pressedScale: Float = 0.94f,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ): Modifier = composed {
     val source = remember { MutableInteractionSource() }
@@ -65,7 +68,13 @@ fun Modifier.pressable(
     val hf = LocalHapticFeedback.current
     this
         .graphicsLayer { scaleX = scale; scaleY = scale; this.alpha = alpha }
-        .clickable(interactionSource = source, indication = null) {
+        .combinedClickable(
+            interactionSource = source,
+            indication = null,
+            onLongClick = onLongClick?.let { lc ->
+                { hf.performHapticFeedback(HapticFeedbackType.LongPress); lc() }
+            },
+        ) {
             if (haptic) hf.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onClick()
         }

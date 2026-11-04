@@ -42,6 +42,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.adfree.player.AppTheme
+import com.adfree.player.data.LibraryStore
 import com.adfree.player.data.ResumeStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -108,6 +109,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         super.onCreate(savedInstanceState)
         if (!readPlaylist(intent)) { finish(); return }
         resume = ResumeStore(this)
+        LibraryStore.init(this)
         settings = AppSettings(this)
         state.subScale = settings.subtitleScale
         state.hwDecoder = settings.hwDecoder
@@ -157,6 +159,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     private fun createPlayer(startMs: Long) {
         released = false
+        LibraryStore.markPlayed(videoUri.toString())
         state.hasPrev = index > 0
         state.hasNext = index < uris.lastIndex
         libVLC = LibVLC(
@@ -250,6 +253,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private fun onEnded() {
         if (released) return
         resume.clear(videoUri.toString())
+        LibraryStore.markWatched(videoUri.toString())
         when {
             state.loopMode == LoopMode.ONE -> switchTo(index, fromStart = true)
             state.hasNext && state.autoNext -> switchTo(index + 1)
@@ -647,7 +651,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         val t = player.time
         val len = player.length
         if (len > 0 && t > RESUME_MIN_MS && t < len - RESUME_MIN_MS) resume.put(key, t)
-        else if (len > 0 && t >= len - RESUME_MIN_MS) resume.clear(key)
+        else if (len > 0 && t >= len - RESUME_MIN_MS) { resume.clear(key); LibraryStore.markWatched(key) }
     }
 
     private fun releasePlayer() {
