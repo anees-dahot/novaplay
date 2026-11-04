@@ -14,6 +14,9 @@ import org.videolan.libvlc.MediaPlayer
 data class Track(val id: Int, val name: String)
 data class Chapter(val timeMs: Long, val name: String)
 
+/** Level HUD shown while swiping brightness/volume. */
+data class Hud(val volume: Boolean, val level: Float)
+
 enum class VideoScale(val label: String, val vlc: MediaPlayer.ScaleType, val ratio: String? = null) {
     FIT("Fit", MediaPlayer.ScaleType.SURFACE_BEST_FIT),
     CROP("Crop", MediaPlayer.ScaleType.SURFACE_FIT_SCREEN),
@@ -62,6 +65,7 @@ class PlayerState {
     var hasNext by mutableStateOf(false)
 
     var gestureText by mutableStateOf<String?>(null)
+    var hud by mutableStateOf<Hud?>(null)
     var gestureTick by mutableIntStateOf(0)
     /** Bumped on any user interaction so the auto-hide timer restarts. */
     var interaction by mutableIntStateOf(0)

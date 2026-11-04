@@ -9,7 +9,7 @@ sed -i '' "s/^val appVersion = \".*\"/val appVersion = \"$VERSION\"/" app/build.
 ./gradlew assembleRelease --console=plain -q
 OUT=app/build/outputs/apk/release; DIST=dist/v$VERSION
 rm -rf "$DIST"; mkdir -p "$DIST"
-for abi in arm64-v8a armeabi-v7a x86_64 universal; do
+for abi in arm64-v8a; do
   cp "$OUT/app-$abi-release.apk" "$DIST/NovaPlay-v$VERSION-$abi.apk"
 done
 git add -A && git commit -m "Release v$VERSION" || true

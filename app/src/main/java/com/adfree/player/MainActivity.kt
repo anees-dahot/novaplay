@@ -31,7 +31,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-val Accent = Color(0xFF3D8BFF)      // bright blue accent
+val Accent = Color(0xFF0A84FF)      // system blue accent
 val Navy = Color(0xFF0A1428)        // app background
 val NavySurface = Color(0xFF132341) // cards, bars, dialogs
 val NavyHigh = Color(0xFF1B2F55)    // raised elements / thumb placeholders

@@ -8,7 +8,7 @@ plugins {
 }
 
 // Bump this for each release (release.sh does it for you).
-val appVersion = "1.0.0"
+val appVersion = "1.1.0"
 
 android {
     namespace = "com.adfree.player"
@@ -43,7 +43,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Strip unused code/resources (R8) to shrink the APK.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (keyProps.isNotEmpty()) signingConfigs.getByName("release")
                             else signingConfigs.getByName("debug")
         }
@@ -54,10 +57,14 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a", "x86_64")
-            isUniversalApk = true
+            // Releases target modern 64-bit phones only (keeps the download small).
+            include("arm64-v8a")
+            isUniversalApk = false
         }
     }
+
+    // Store native libs compressed inside the APK: much smaller download.
+    packaging { jniLibs { useLegacyPackaging = true } }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
