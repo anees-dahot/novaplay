@@ -94,6 +94,14 @@ class PlayerState {
     var subBackground by mutableStateOf(false)
     var subBold by mutableStateOf(false)
 
+    // Online subtitles (OpenSubtitles)
+    var onlineSubs by mutableStateOf<List<com.novaplay.player.subs.OnlineSub>>(emptyList())
+    var onlineBusy by mutableStateOf(false)
+    var onlineError by mutableStateOf<String?>(null)
+    var onlineSearched by mutableStateOf(false)
+    /** Bumped when a downloaded subtitle is loaded, so the sheet can close. */
+    var onlineLoaded by mutableIntStateOf(0)
+
     // Casting
     var renderers by mutableStateOf<List<String>>(emptyList())
     var castingTo by mutableStateOf<String?>(null)
@@ -124,6 +132,7 @@ class PlayerState {
         chapters = emptyList(); abStart = -1; abEnd = -1
         zoom = 1f; panX = 0f; panY = 0f
         castingTo = null
+        onlineSubs = emptyList(); onlineError = null; onlineSearched = false
     }
 }
 
@@ -161,6 +170,10 @@ interface PlayerController {
     fun setEqPreset(index: Int)
     fun setBass(db: Int)
     fun setSubStyle(color: Int, background: Boolean, bold: Boolean)
+    /** Title guess used to prefill the online subtitle search. */
+    fun subtitleQuery(): String
+    fun searchOnlineSubs(query: String)
+    fun downloadOnlineSub(sub: com.novaplay.player.subs.OnlineSub)
     fun startCastScan()
     fun stopCastScan()
     /** null = stop casting, play on this phone. */

@@ -22,6 +22,12 @@ android {
         versionName = appVersion
         // Used by the in-app updater to find releases.
         buildConfigField("String", "GITHUB_REPO", "\"anees-dahot/novaplay\"")
+        // OpenSubtitles API key: put opensubtitlesKey=... in ~/.novaplay/keystore.properties (never in git).
+        val osKey = Properties().apply {
+            val f = File(System.getProperty("user.home"), ".novaplay/keystore.properties")
+            if (f.exists()) f.inputStream().use { load(it) }
+        }.getProperty("opensubtitlesKey", "")
+        buildConfigField("String", "OPENSUBTITLES_KEY", "\"$osKey\"")
     }
 
     // Release key lives outside the repo (~/.novaplay/keystore.properties).

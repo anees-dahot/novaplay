@@ -54,6 +54,10 @@ import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererDiscoverer
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import com.novaplay.player.subs.OnlineSub
+import com.novaplay.player.subs.OpenSubtitles
 import org.videolan.libvlc.RendererItem
 import android.net.wifi.WifiManager
 import org.videolan.libvlc.interfaces.IMedia
@@ -711,6 +715,52 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.subColor = color; state.subBackground = background; state.subBold = bold
         settings.subColor = color; settings.subBackground = background; settings.subBold = bold
         restartSameVideo() // freetype options only apply to a new libVLC instance
+    }
+
+    // ---------- Online subtitles ----------
+
+    override fun subtitleQuery() = OpenSubtitles.cleanTitle(videoTitle)
+
+    override fun searchOnlineSubs(query: String) {
+        if (state.onlineBusy) return
+        state.onlineBusy = true
+        state.onlineError = null
+        val uri = videoUri
+        lifecycleScope.launch {
+            runCatching {
+                // Exact matches come from the file hash; the title search catches the rest.
+                val hash = if (uri.scheme == "content" || uri.scheme == "file")
+                    withContext(Dispatchers.IO) { OpenSubtitles.hash(this@PlayerActivity, uri) } else null
+                OpenSubtitles.search(query, hash)
+            }.onSuccess {
+                state.onlineSubs = it
+            }.onFailure {
+                state.onlineSubs = emptyList()
+                state.onlineError = it.message ?: "Search failed — check your connection"
+            }
+            state.onlineSearched = true
+            state.onlineBusy = false
+        }
+    }
+
+    override fun downloadOnlineSub(sub: OnlineSub) {
+        if (state.onlineBusy) return
+        state.onlineBusy = true
+        state.onlineError = null
+        val key = videoUri.toString()
+        lifecycleScope.launch {
+            runCatching { OpenSubtitles.download(sub, File(filesDir, "subs")) }
+                .onSuccess { file ->
+                    if (!released) {
+                        player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(file), true)
+                        settings.setSubtitleFor(key, file.absolutePath)
+                        state.flash("Subtitle loaded")
+                        state.onlineLoaded++
+                    }
+                }
+                .onFailure { state.onlineError = it.message ?: "Download failed" }
+            state.onlineBusy = false
+        }
     }
 
     // ---------- Casting (Chromecast etc. via libVLC renderers) ----------

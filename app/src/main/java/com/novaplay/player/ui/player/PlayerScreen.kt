@@ -111,7 +111,7 @@ import com.novaplay.player.ui.pressable
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
-private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST }
+private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS }
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
@@ -269,7 +269,8 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                     s.chapters.map { it.timeMs to "${formatTime(it.timeMs)}   ${it.name}" },
                     s.chapters.lastOrNull { it.timeMs <= s.time }?.timeMs ?: -1L,
                 ) { c.seekTo(it); sheet = null }
-                Sheet.SUBTITLES -> SubtitleSheet(s, c, close = { sheet = null })
+                Sheet.SUBTITLES -> SubtitleSheet(s, c, close = { sheet = null }, openOnline = { sheet = Sheet.ONLINE_SUBS })
+                Sheet.ONLINE_SUBS -> OnlineSubsSheet(s, c, close = { sheet = null })
                 Sheet.MORE -> MoreSheet(
                     s, c, close = { sheet = null },
                     openChapters = { sheet = Sheet.CHAPTERS },
@@ -802,7 +803,7 @@ private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect:
 }
 
 @Composable
-private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
+private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit, openOnline: () -> Unit) {
     SheetTitle("Subtitles")
     if (s.spuTracks.isNotEmpty()) {
         Group {
@@ -820,7 +821,13 @@ private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit
         }
         Spacer(Modifier.height(16.dp))
     }
-    Group { ActionRow("Load Subtitle File…") { c.pickSubtitleFile(); close() } }
+    Group {
+        if (com.novaplay.player.subs.OpenSubtitles.enabled) {
+            ActionRow("Search Online…") { openOnline() }
+            GroupDivider()
+        }
+        ActionRow("Load Subtitle File…") { c.pickSubtitleFile(); close() }
+    }
 
     Spacer(Modifier.height(20.dp))
     Text("DELAY", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
@@ -1014,5 +1021,69 @@ private fun MoreSheet(
     Text(
         "Turn off Hardware Decoding if a video stutters or shows a black screen.",
         style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+    )
+}
+
+@Composable
+private fun OnlineSubsSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
+    var query by remember { mutableStateOf(c.subtitleQuery()) }
+    LaunchedEffect(Unit) { if (!s.onlineSearched) c.searchOnlineSubs(query) }
+    val loadedAtOpen = remember { s.onlineLoaded }
+    LaunchedEffect(s.onlineLoaded) { if (s.onlineLoaded != loadedAtOpen) close() }
+    SheetTitle("Search Subtitles")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.material3.OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true,
+            placeholder = { Text("Movie or show name", color = Secondary) },
+            shape = RoundedCornerShape(10.dp),
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Accent, cursorColor = Accent,
+                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+            ),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { c.searchOnlineSubs(query) }),
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text("Search", style = Type.headline, color = Accent,
+            modifier = Modifier.pressable { c.searchOnlineSubs(query) }.padding(horizontal = 8.dp, vertical = 10.dp))
+    }
+    Spacer(Modifier.height(14.dp))
+    when {
+        s.onlineBusy -> Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(16.dp), color = Secondary, strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Working…", style = Type.body, color = Secondary)
+        }
+        s.onlineError != null -> Text(s.onlineError.orEmpty(), style = Type.body, color = Color(0xFFFF6961), modifier = Modifier.padding(16.dp))
+        s.onlineSearched && s.onlineSubs.isEmpty() -> Text("No subtitles found. Try a shorter name.", style = Type.body, color = Secondary, modifier = Modifier.padding(16.dp))
+    }
+    if (s.onlineSubs.isNotEmpty()) {
+        Group {
+            s.onlineSubs.take(40).forEachIndexed { i, sub ->
+                Row(
+                    Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.downloadOnlineSub(sub) }
+                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(sub.name, style = Type.body, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            buildString {
+                                append(sub.language.uppercase())
+                                append(" · ${sub.downloads} downloads")
+                                if (sub.exact) append(" · Matches this file")
+                            },
+                            style = Type.footnote, color = if (sub.exact) Color(0xFF30D158) else Secondary,
+                        )
+                    }
+                }
+                if (i < minOf(s.onlineSubs.size, 40) - 1) GroupDivider()
+            }
+        }
+    }
+    Text(
+        "Subtitles by OpenSubtitles.com",
+        style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, top = 10.dp),
     )
 }
