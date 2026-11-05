@@ -64,14 +64,22 @@ class PlayerState {
     var hasPrev by mutableStateOf(false)
     var hasNext by mutableStateOf(false)
 
+    /** Current video title + position in playlist; state-backed so next/prev updates the UI. */
+    var title by mutableStateOf("")
+    var playlistIndex by mutableIntStateOf(0)
+    var playlistSize by mutableIntStateOf(1)
+
     var gestureText by mutableStateOf<String?>(null)
+    /** Where the feedback bubble sits: -1 left half, 0 center, 1 right half (double-tap seeks). */
+    var flashSide by mutableIntStateOf(0)
     var hud by mutableStateOf<Hud?>(null)
     var gestureTick by mutableIntStateOf(0)
     /** Bumped on any user interaction so the auto-hide timer restarts. */
     var interaction by mutableIntStateOf(0)
 
-    fun flash(text: String) {
+    fun flash(text: String, side: Int = 0) {
         gestureText = text
+        flashSide = side
         gestureTick++
     }
 

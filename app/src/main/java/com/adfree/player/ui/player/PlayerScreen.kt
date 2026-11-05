@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
@@ -37,7 +36,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SubtitlesOff
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Audiotrack
@@ -46,7 +55,6 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
@@ -93,7 +101,6 @@ import com.adfree.player.NavySurface
 import com.adfree.player.data.formatTime
 import com.adfree.player.ui.Motion
 import com.adfree.player.ui.Type
-import com.adfree.player.ui.glass
 import com.adfree.player.ui.pressable
 import kotlinx.coroutines.delay
 import kotlin.math.abs
@@ -103,7 +110,11 @@ private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
 private val SUB_SCALES = listOf(75, 100, 125, 150, 200)
-private val Secondary = Color(0xFFA9B4C9)
+private val Secondary = Color(0xFF9A9AA0)
+private val Dim = Color(0xB3FFFFFF)
+private val Scrim = Color(0x80000000)
+private val TrackColor = Color(0x4DFFFFFF)
+private val TimeW = 56.dp
 /** Tabular digits so time labels don't jitter while counting. */
 private val Tabular = Type.footnote.copy(fontFeatureSettings = "tnum")
 
@@ -118,9 +129,9 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
             s.controlsVisible = false
         }
     }
-    // Feedback bubbles disappear shortly after the last update.
+    // Feedback disappears shortly after the last update.
     LaunchedEffect(s.gestureTick) {
-        delay(900)
+        delay(800)
         s.gestureText = null
         s.hud = null
     }
@@ -133,8 +144,8 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
 
         if (!s.started) {
             CircularProgressIndicator(
-                Modifier.align(Alignment.Center).size(40.dp),
-                color = Color.White, strokeWidth = 3.dp,
+                Modifier.align(Alignment.Center).size(36.dp),
+                color = Color.White, strokeWidth = 2.5.dp,
             )
         }
 
@@ -142,46 +153,7 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
 
         Box(Modifier.fillMaxSize().composedGestures(s, c))
 
-        // Brightness / volume HUD (iOS-style level pill).
-        AnimatedVisibility(
-            visible = s.hud != null,
-            enter = fadeIn(Motion.snappy()) + scaleIn(Motion.snappy(), initialScale = 0.9f),
-            exit = fadeOut(Motion.smooth()) + scaleOut(Motion.smooth(), targetScale = 0.9f),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp),
-        ) {
-            val hud = s.hud ?: Hud(false, 0f)
-            Row(
-                Modifier.glass().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    if (hud.volume) Icons.AutoMirrored.Filled.VolumeUp else Icons.Default.LightMode,
-                    null, tint = Color.White, modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(12.dp))
-                Box(Modifier.size(width = 140.dp, height = 6.dp).clip(CircleShape).background(Color(0x40FFFFFF))) {
-                    Box(Modifier.fillMaxWidth(hud.level.coerceIn(0f, 1f)).height(6.dp).background(Color.White))
-                }
-            }
-        }
-
-        // Text feedback (seek amount, 2x, toggles).
-        val bubble = if (s.holdingFast) "2×  ▶▶" else s.gestureText
-        AnimatedVisibility(
-            visible = bubble != null,
-            enter = fadeIn(Motion.snappy()) + scaleIn(Motion.snappy(), initialScale = 0.9f),
-            exit = fadeOut(Motion.smooth()),
-            modifier = Modifier.align(if (s.holdingFast) Alignment.TopCenter else Alignment.Center)
-                .padding(top = if (s.holdingFast) 28.dp else 0.dp),
-        ) {
-            Text(
-                bubble.orEmpty(),
-                color = Color.White,
-                style = Type.headline,
-                modifier = Modifier.glass().padding(horizontal = 20.dp, vertical = 10.dp),
-            )
-        }
-
+        // Controls sit under the feedback so a seek bubble is never hidden by the bar.
         if (s.locked) {
             AnimatedVisibility(
                 visible = s.controlsVisible,
@@ -190,16 +162,73 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                 modifier = Modifier.align(Alignment.CenterStart)
                     .windowInsetsPadding(WindowInsets.displayCutout).padding(24.dp),
             ) {
-                GlassCircle(Icons.Default.Lock, "Unlock", 52) { s.locked = false; s.bump() }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.size(52.dp).background(Scrim, CircleShape)
+                            .pressable(pressedScale = 0.88f) { s.locked = false; s.bump() },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Default.Lock, "Unlock", tint = Color.White, modifier = Modifier.size(24.dp)) }
+                    Spacer(Modifier.height(6.dp))
+                    Text("Tap to unlock", color = Dim, style = Type.caption)
+                }
             }
         } else {
             AnimatedVisibility(
                 visible = s.controlsVisible,
-                enter = fadeIn(Motion.smooth()) + scaleIn(Motion.smooth(), initialScale = 0.97f),
-                exit = fadeOut(Motion.smooth()) + scaleOut(Motion.smooth(), targetScale = 0.97f),
+                enter = fadeIn(Motion.smooth()),
+                exit = fadeOut(Motion.smooth()),
                 modifier = Modifier.fillMaxSize(),
             ) {
                 Controls(s, c, onSheet = { sheet = it; s.bump() })
+            }
+        }
+
+        // Brightness (left) / volume (right) level bar.
+        val hud = s.hud
+        AnimatedVisibility(
+            visible = hud != null,
+            enter = fadeIn(Motion.snappy()),
+            exit = fadeOut(Motion.smooth()),
+            modifier = Modifier.align(if (hud?.volume == true) Alignment.CenterEnd else Alignment.CenterStart)
+                .windowInsetsPadding(WindowInsets.displayCutout).padding(horizontal = 40.dp),
+        ) {
+            LevelBar(hud ?: Hud(false, 0f))
+        }
+
+        // Hold-to-2× pill.
+        AnimatedVisibility(
+            visible = s.holdingFast,
+            enter = fadeIn(Motion.snappy()),
+            exit = fadeOut(Motion.smooth()),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp),
+        ) {
+            Row(
+                Modifier.background(Scrim, RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("2×", color = Color.White, style = Type.subhead.copy(fontWeight = FontWeight.SemiBold))
+                Spacer(Modifier.width(6.dp))
+                Icon(Icons.Default.FastForward, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        // Text feedback (seek amount, toggles). Double-tap seeks show on their own half.
+        val text = s.gestureText
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val x = when (s.flashSide) { -1 -> -maxWidth / 4; 1 -> maxWidth / 4; else -> 0.dp }
+            AnimatedVisibility(
+                visible = text != null,
+                enter = fadeIn(Motion.snappy()),
+                exit = fadeOut(Motion.smooth()),
+                modifier = Modifier.align(Alignment.Center).offset(x = x),
+            ) {
+                Text(
+                    text.orEmpty(),
+                    color = Color.White,
+                    style = Type.headline.copy(fontFeatureSettings = "tnum"),
+                    modifier = Modifier.background(Scrim, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                )
             }
         }
     }
@@ -230,14 +259,49 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
 
 private fun formatRate(r: Float) = if (r % 1f == 0f) r.toInt().toString() else r.toString()
 
-/** Tap = show/hide, double-tap sides = ±10s, hold = 2x, swipe left/right half = brightness/volume,
- *  horizontal swipe = seek, pinch = crop/fit. */
+@Composable
+private fun LevelBar(hud: Hud) {
+    val level = hud.level.coerceIn(0f, 1f)
+    Column(
+        Modifier.background(Scrim, RoundedCornerShape(16.dp)).padding(horizontal = 10.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            when {
+                !hud.volume -> Icons.Default.LightMode
+                level == 0f -> Icons.AutoMirrored.Filled.VolumeOff
+                else -> Icons.AutoMirrored.Filled.VolumeUp
+            },
+            null, tint = Color.White, modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.height(10.dp))
+        Box(Modifier.size(width = 4.dp, height = 120.dp).clip(CircleShape).background(TrackColor)) {
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(level).background(Color.White))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("${(level * 100).toInt()}", color = Color.White, style = Tabular)
+    }
+}
 
+/** Tap = show/hide, double-tap sides = ±10s (keep tapping to stack), hold = 2x,
+ *  swipe left/right half = brightness/volume, horizontal swipe = seek, pinch = crop/fit. */
 @Composable
 private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modifier {
     val haptics = LocalHapticFeedback.current
+    // Double-tap seek streak: further single taps on the same side keep adding 10s.
+    val streak = remember { SeekStreak() }
     return this
         .pointerInput(s.locked) {
+            fun seekTap(left: Boolean) {
+                val now = System.currentTimeMillis()
+                if (now - streak.at > 900 || streak.left != left) streak.total = 0
+                streak.left = left
+                streak.at = now
+                streak.total += 10
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                c.seekBy(if (left) -10_000 else 10_000)
+                s.flash(if (left) "−${streak.total}s" else "+${streak.total}s", if (left) -1 else 1)
+            }
             detectTapGestures(
                 onPress = {
                     tryAwaitRelease()
@@ -249,17 +313,23 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                         if (s.holdingFast) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     }
                 },
-                onTap = {
-                    s.controlsVisible = !s.controlsVisible
-                    s.bump()
+                onTap = { pos ->
+                    val left = pos.x < size.width / 2
+                    if (!s.locked && System.currentTimeMillis() - streak.at < 900 && streak.left == left) {
+                        seekTap(left)
+                    } else {
+                        s.controlsVisible = !s.controlsVisible
+                        s.bump()
+                    }
                 },
                 onDoubleTap = { pos ->
                     if (s.locked) return@detectTapGestures
-                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    if (pos.x < size.width / 2) {
-                        c.seekBy(-10_000); s.flash("«  10s")
-                    } else {
-                        c.seekBy(10_000); s.flash("10s  »")
+                    // Middle third does nothing special; play/pause lives on the button.
+                    val third = size.width / 3
+                    when {
+                        pos.x < third -> seekTap(true)
+                        pos.x > third * 2 -> seekTap(false)
+                        else -> { c.togglePlay(); s.flash(if (s.playing) "Paused" else "Playing") }
                     }
                 },
             )
@@ -270,6 +340,9 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                 val down = awaitFirstDown(requireUnconsumed = false)
                 val slop = viewConfiguration.touchSlop
                 val leftSide = down.position.x < size.width / 2
+                // Ignore swipes that start in the system-gesture strips (status bar / home bar).
+                val edge = 32.dp.toPx()
+                val nearEdge = down.position.y < edge || down.position.y > size.height - edge
                 val startTime = s.time
                 var mode = GestureMode.NONE
                 var dx = 0f
@@ -286,7 +359,9 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     if (pressed.size >= 2) {
                         val dist = (pressed[0].position - pressed[1].position).getDistance()
                         if (mode != GestureMode.PINCH) {
+                            if (mode == GestureMode.SEEK) s.time = startTime
                             s.seeking = false
+                            s.gestureText = null
                             mode = GestureMode.PINCH
                             startDist = dist
                         }
@@ -294,13 +369,14 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                         event.changes.forEach { it.consume() }
                         continue
                     }
-                    if (mode == GestureMode.PINCH) continue
+                    if (mode == GestureMode.PINCH || nearEdge) continue
 
                     val change = pressed[0]
                     val delta = change.position - change.previousPosition
                     dx += delta.x
                     dy += delta.y
                     if (mode == GestureMode.NONE && (abs(dx) > slop || abs(dy) > slop)) {
+                        if (s.holdingFast) c.stopHoldFast()
                         mode = when {
                             abs(dx) > abs(dy) -> GestureMode.SEEK.also { s.seeking = true }
                             leftSide -> GestureMode.BRIGHTNESS
@@ -352,124 +428,137 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
         }
 }
 
+private class SeekStreak {
+    var at = 0L
+    var left = false
+    var total = 0
+}
+
 @Composable
 private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Unit) {
     val haptics = LocalHapticFeedback.current
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0x33000000)) // light scrim so glass reads over bright video
-            .windowInsetsPadding(WindowInsets.displayCutout)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        // ── Top: title capsule (left) + tools capsule (right)
-        Row(
-            Modifier.align(Alignment.TopCenter).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+    Box(Modifier.fillMaxSize()) {
+        // Gradient scrims only where text/icons sit; the middle of the picture stays clean.
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(120.dp)
+                .background(Brush.verticalGradient(listOf(Color(0xA6000000), Color.Transparent))),
+        )
+        Box(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(150.dp)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xBF000000)))),
+        )
+
+        Box(
+            Modifier.fillMaxSize()
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
+            // ── Top bar: back + title, track tools on the right.
             Row(
-                Modifier.weight(1f, fill = false).glass().pressable(onClick = c::back)
-                    .padding(start = 12.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+                Modifier.align(Alignment.TopCenter).fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBackIos, "Back", tint = Color.White, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(c.videoTitle, color = Color.White, style = Type.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = c::back)
+                Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
+                    Text(s.title, color = Color.White, style = Type.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (s.playlistSize > 1) {
+                        Text("${s.playlistIndex + 1} of ${s.playlistSize}", color = Dim, style = Type.caption)
+                    }
+                }
+                IconBtn(Icons.Default.Audiotrack, "Audio") { onSheet(Sheet.AUDIO) }
+                IconBtn(
+                    if (s.spuTrack >= 0) Icons.Default.Subtitles else Icons.Default.SubtitlesOff,
+                    "Subtitles",
+                ) { onSheet(Sheet.SUBTITLES) }
+                IconBtn(Icons.Default.PictureInPictureAlt, "Picture in picture") { c.enterPip() }
+                IconBtn(Icons.Default.MoreVert, "More") { onSheet(Sheet.MORE) }
             }
-            Spacer(Modifier.width(12.dp))
-            Row(Modifier.glass().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "${formatRate(s.rate)}×",
-                    color = Color.White, style = Type.headline.copy(fontFeatureSettings = "tnum"),
-                    modifier = Modifier.pressable { onSheet(Sheet.SPEED) }.padding(horizontal = 10.dp, vertical = 10.dp),
-                )
-                ToolIcon(Icons.Default.Audiotrack, "Audio") { onSheet(Sheet.AUDIO) }
-                ToolIcon(Icons.Default.Subtitles, "Subtitles") { onSheet(Sheet.SUBTITLES) }
-                ToolIcon(Icons.Default.AspectRatio, "Aspect ratio") { onSheet(Sheet.ASPECT) }
-                ToolIcon(Icons.Default.PictureInPictureAlt, "Picture in picture") { c.enterPip() }
-                ToolIcon(Icons.Default.MoreHoriz, "More") { onSheet(Sheet.MORE) }
-            }
-        }
 
-        // ── Center transport
-        Row(
-            Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.spacedBy(28.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            GlassCircle(Icons.Default.SkipPrevious, "Previous", 48) { c.playPrev(); s.bump() }
-            GlassCircle(Icons.Default.Replay10, "Back 10 seconds", 56) { c.seekBy(-10_000); s.bump() }
-            Box(
-                Modifier.size(76.dp).glass(CircleShape).pressable(pressedScale = 0.9f, onClick = c::togglePlay),
-                contentAlignment = Alignment.Center,
+            // ── Center transport: plain icons, only play/pause gets a soft backing.
+            Row(
+                Modifier.align(Alignment.Center),
+                horizontalArrangement = Arrangement.spacedBy(36.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Icon morphs (scale + fade) rather than snapping.
-                AnimatedContent(
-                    targetState = s.playing,
-                    transitionSpec = {
-                        (scaleIn(Motion.snappy(), initialScale = 0.6f) + fadeIn(Motion.snappy())) togetherWith
-                            (scaleOut(Motion.snappy(), targetScale = 0.6f) + fadeOut(Motion.snappy()))
-                    },
-                    label = "playPause",
-                ) { playing ->
-                    Icon(
-                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        if (playing) "Pause" else "Play",
-                        tint = Color.White, modifier = Modifier.size(42.dp),
-                    )
+                IconBtn(Icons.Default.Replay10, "Back 10 seconds", box = 56, iconSize = 34) { c.seekBy(-10_000); s.bump() }
+                Box(
+                    Modifier.size(72.dp).background(Scrim, CircleShape)
+                        .pressable(pressedScale = 0.9f, onClick = c::togglePlay),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AnimatedContent(
+                        targetState = s.playing,
+                        transitionSpec = {
+                            (scaleIn(Motion.snappy(), initialScale = 0.7f) + fadeIn(Motion.snappy())) togetherWith
+                                (scaleOut(Motion.snappy(), targetScale = 0.7f) + fadeOut(Motion.snappy()))
+                        },
+                        label = "playPause",
+                    ) { playing ->
+                        Icon(
+                            if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            if (playing) "Pause" else "Play",
+                            tint = Color.White, modifier = Modifier.size(44.dp),
+                        )
+                    }
                 }
+                IconBtn(Icons.Default.Forward10, "Forward 10 seconds", box = 56, iconSize = 34) { c.seekBy(10_000); s.bump() }
             }
-            GlassCircle(Icons.Default.Forward10, "Forward 10 seconds", 56) { c.seekBy(10_000); s.bump() }
-            val canNext = s.hasNext || s.loopMode == LoopMode.ALL
-            GlassCircle(Icons.Default.SkipNext, "Next", 48, enabled = canNext) { c.playNext(); s.bump() }
-        }
 
-        // ── Bottom: scrubber card
-        Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                .glass(RoundedCornerShape(22.dp))
-                .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 6.dp),
-        ) {
-            Scrubber(s, c)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(formatTime(s.time), color = Color.White, style = Tabular)
-                Spacer(Modifier.width(10.dp))
-                ToolIcon(Icons.Default.LockOpen, "Lock screen") {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    s.locked = true; s.bump()
-                }
-                if (s.abStart >= 0) {
+            // ── Bottom: time · scrubber · remaining, then tool row.
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(formatTime(s.time), color = Color.White, style = Tabular, modifier = Modifier.width(TimeW))
+                    Scrubber(s, c, Modifier.weight(1f).padding(horizontal = 10.dp))
                     Text(
-                        if (s.abEnd >= 0) "A–B  ${formatTime(s.abStart)} – ${formatTime(s.abEnd)}" else "A  ${formatTime(s.abStart)}",
-                        color = Accent, style = Type.caption,
-                        modifier = Modifier.pressable { c.cycleAbRepeat() }.padding(8.dp),
+                        "−" + formatTime((s.length - s.time).coerceAtLeast(0)),
+                        color = Dim, style = Tabular, textAlign = TextAlign.End, modifier = Modifier.width(TimeW),
                     )
                 }
-                if (s.chapters.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconBtn(Icons.Default.LockOpen, "Lock screen") {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        s.locked = true; s.bump()
+                    }
+                    if (s.playlistSize > 1) {
+                        IconBtn(Icons.Default.SkipPrevious, "Previous") { c.playPrev(); s.bump() }
+                        IconBtn(Icons.Default.SkipNext, "Next", enabled = s.hasNext || s.loopMode == LoopMode.ALL) {
+                            c.playNext(); s.bump()
+                        }
+                    }
+                    if (s.abStart >= 0) {
+                        Text(
+                            if (s.abEnd >= 0) "A–B" else "A",
+                            color = Accent, style = Type.subhead.copy(fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.pressable { c.cycleAbRepeat() }.padding(horizontal = 10.dp, vertical = 10.dp),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (s.chapters.isNotEmpty()) {
+                        IconBtn(Icons.AutoMirrored.Filled.List, "Chapters") { onSheet(Sheet.CHAPTERS) }
+                    }
                     Text(
-                        "Chapters",
-                        color = Color.White, style = Type.caption,
-                        modifier = Modifier.pressable { onSheet(Sheet.CHAPTERS) }.padding(8.dp),
+                        "${formatRate(s.rate)}×",
+                        color = if (s.rate != 1f) Accent else Color.White,
+                        style = Type.subhead.copy(fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum"),
+                        modifier = Modifier.pressable { onSheet(Sheet.SPEED) }.padding(horizontal = 12.dp, vertical = 10.dp),
                     )
+                    IconBtn(Icons.Default.AspectRatio, "Aspect ratio") { onSheet(Sheet.ASPECT) }
+                    IconBtn(Icons.Default.ScreenRotation, "Rotate") { c.toggleRotation(); s.bump() }
                 }
-                Spacer(Modifier.weight(1f))
-                ToolIcon(Icons.Default.ScreenRotation, "Rotate") { c.toggleRotation(); s.bump() }
-                Spacer(Modifier.width(10.dp))
-                Text("−" + formatTime((s.length - s.time).coerceAtLeast(0)), color = Secondary, style = Tabular)
             }
         }
     }
 }
 
 /**
- * iOS-style scrubber: thin track that thickens while you drag, follows the finger 1:1,
- * shows a frame preview above the finger, and marks chapters.
+ * Scrubber: thin track that thickens while dragging, round thumb, follows the finger 1:1,
+ * frame preview above the finger, chapter ticks.
  */
 @Composable
-private fun Scrubber(s: PlayerState, c: PlayerController) {
+private fun Scrubber(s: PlayerState, c: PlayerController, modifier: Modifier = Modifier) {
     val max = s.length.toFloat().coerceAtLeast(1f)
-    val thickness by animateDpAsState(if (s.seeking) 12.dp else 5.dp, Motion.snappy(), label = "track")
+    val thickness by animateDpAsState(if (s.seeking) 6.dp else 3.dp, Motion.snappy(), label = "track")
+    val thumb by animateDpAsState(if (s.seeking) 18.dp else 12.dp, Motion.snappy(), label = "thumb")
     var preview by remember { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(s.seeking, s.time / 2000) {
         if (!s.seeking) { preview = null; return@LaunchedEffect }
@@ -477,37 +566,41 @@ private fun Scrubber(s: PlayerState, c: PlayerController) {
         preview = c.previewFrame(s.time)?.asImageBitmap()
     }
 
-    BoxWithConstraints(Modifier.fillMaxWidth().height(28.dp)) {
-        val widthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        fun timeAt(x: Float) = (x / widthPx * max).toLong().coerceIn(0, s.length.coerceAtLeast(0))
-
+    BoxWithConstraints(modifier.height(32.dp)) {
         // Frame preview floats above the finger.
-        if (s.seeking) {
-            val previewW = 168.dp
+        if (s.seeking && s.length > 0) {
+            val previewW = 160.dp
             val fraction = (s.time / max).coerceIn(0f, 1f)
             val x = maxWidth * fraction - previewW / 2
             Column(
-                Modifier.offset(x = x.coerceIn(0.dp, (maxWidth - previewW).coerceAtLeast(0.dp)), y = (-120).dp)
+                Modifier.offset(x = x.coerceIn(0.dp, (maxWidth - previewW).coerceAtLeast(0.dp)), y = (-118).dp)
                     .width(previewW),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Box(
-                    Modifier.size(previewW, 94.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black)
-                        .glass(RoundedCornerShape(12.dp)),
+                    Modifier.size(previewW, 90.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black)
+                        .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp)),
                 ) {
                     preview?.let { Image(it, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                 }
-                Spacer(Modifier.height(4.dp))
-                Text(formatTime(s.time), color = Color.White, style = Tabular, modifier = Modifier.glass().padding(horizontal = 8.dp, vertical = 2.dp))
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    formatTime(s.time), color = Color.White, style = Tabular,
+                    modifier = Modifier.background(Scrim, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
+                )
             }
         }
 
         Canvas(
             Modifier
                 .fillMaxSize()
+                // Keyed on length only; width is read live so rotation never leaves a stale mapping.
                 .pointerInput(s.length) {
+                    fun timeAt(x: Float) =
+                        (x / size.width.coerceAtLeast(1) * max).toLong().coerceIn(0, s.length.coerceAtLeast(0))
                     awaitEachGesture {
                         val down = awaitFirstDown()
+                        down.consume()
                         s.seeking = true
                         s.time = timeAt(down.position.x)
                         s.bump()
@@ -520,40 +613,43 @@ private fun Scrubber(s: PlayerState, c: PlayerController) {
                         }
                         c.seekTo(s.time)
                         s.seeking = false
+                        s.bump()
                     }
                 },
         ) {
             val h = thickness.toPx()
-            val top = (size.height - h) / 2
+            val cy = size.height / 2
+            val top = cy - h / 2
             val r = CornerRadius(h / 2, h / 2)
-            drawRoundRect(Color(0x40FFFFFF), Offset(0f, top), Size(size.width, h), r)
-            drawRoundRect(Color.White, Offset(0f, top), Size(size.width * (s.time / max).coerceIn(0f, 1f), h), r)
-            // Chapter gaps, like iOS chapter segments.
+            val played = size.width * (s.time / max).coerceIn(0f, 1f)
+            drawRoundRect(TrackColor, Offset(0f, top), Size(size.width, h), r)
+            drawRoundRect(Accent, Offset(0f, top), Size(played, h), r)
             if (s.chapters.size > 1 && s.length > 0) {
                 s.chapters.drop(1).forEach { ch ->
                     val cx = size.width * (ch.timeMs / max)
-                    drawRect(Color(0xCC0B1220), Offset(cx - 1.5f, top), Size(3f, h))
+                    drawRect(Color.Black, Offset(cx - 1f, top), Size(2f, h))
                 }
             }
+            drawCircle(Color.White, thumb.toPx() / 2, Offset(played.coerceIn(0f, size.width), cy))
         }
     }
 }
 
 @Composable
-private fun RowScope.ToolIcon(icon: ImageVector, desc: String, onClick: () -> Unit) {
-    Box(Modifier.size(42.dp).pressable(pressedScale = 0.85f, onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, desc, tint = Color.White, modifier = Modifier.size(22.dp))
-    }
-}
-
-@Composable
-private fun GlassCircle(icon: ImageVector, desc: String, size: Int, enabled: Boolean = true, onClick: () -> Unit) {
+private fun IconBtn(
+    icon: ImageVector,
+    desc: String,
+    box: Int = 44,
+    iconSize: Int = 22,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Box(
-        Modifier.size(size.dp).glass(CircleShape)
-            .then(if (enabled) Modifier.pressable(pressedScale = 0.88f, onClick = onClick) else Modifier),
+        Modifier.size(box.dp)
+            .then(if (enabled) Modifier.pressable(pressedScale = 0.85f, onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, desc, tint = if (enabled) Color.White else Color(0x55FFFFFF), modifier = Modifier.size((size * 0.55f).dp))
+        Icon(icon, desc, tint = if (enabled) Color.White else Color(0x4DFFFFFF), modifier = Modifier.size(iconSize.dp))
     }
 }
 
@@ -648,7 +744,7 @@ private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect:
         val segW = maxWidth / options.size
         val idx = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
         val x by animateDpAsState(segW * idx, Motion.smooth(), label = "seg")
-        Box(Modifier.offset(x = x).width(segW).fillMaxSize().clip(RoundedCornerShape(8.dp)).background(Color(0xFF3A4C6E)))
+        Box(Modifier.offset(x = x).width(segW).fillMaxSize().clip(RoundedCornerShape(8.dp)).background(Color(0xFF3A3A40)))
         Row(Modifier.fillMaxSize()) {
             options.forEach { (value, label) ->
                 Box(
@@ -688,7 +784,7 @@ private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit
             Text("−", style = Type.title, color = Accent,
                 modifier = Modifier.pressable { c.shiftSpuDelay(-250) }.padding(horizontal = 16.dp, vertical = 6.dp))
             Text("${s.spuDelayMs} ms", style = Type.body.copy(fontFeatureSettings = "tnum"), color = Color.White,
-                modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
             Text("+", style = Type.title, color = Accent,
                 modifier = Modifier.pressable { c.shiftSpuDelay(250) }.padding(horizontal = 16.dp, vertical = 6.dp))
         }

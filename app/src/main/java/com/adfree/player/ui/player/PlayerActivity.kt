@@ -16,6 +16,8 @@ import android.graphics.Bitmap
 import android.graphics.drawable.Icon
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
+import kotlin.math.abs
+import android.os.SystemClock
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -90,6 +92,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private var brightness = -1f
     private var volumeAcc = -1f
     private var rateBeforeHold = 1f
+    private var seekTarget = 0L
+    private var seekGuardUntil = 0L
 
     private var retriever: MediaMetadataRetriever? = null
     private val retrieverLock = Mutex()
@@ -162,6 +166,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         LibraryStore.markPlayed(videoUri.toString())
         state.hasPrev = index > 0
         state.hasNext = index < uris.lastIndex
+        state.title = videoTitle
+        state.playlistIndex = index
+        state.playlistSize = uris.size
         libVLC = LibVLC(
             this,
             arrayListOf(
@@ -232,7 +239,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             }
             MediaPlayer.Event.TimeChanged -> {
                 val t = event.timeChanged
-                if (!state.seeking) state.time = t
+                // After a seek libVLC still reports a few old times; ignore them so the bar doesn't jump back.
+                val settled = SystemClock.uptimeMillis() > seekGuardUntil || abs(t - seekTarget) < 1_500
+                if (!state.seeking && settled) state.time = t
                 if (t > 0) state.started = true
                 // A-B repeat: jump back to A once we pass B.
                 if (state.abStart >= 0 && state.abEnd > state.abStart && t >= state.abEnd) {
@@ -325,6 +334,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         val target = if (state.length > 0) ms.coerceIn(0, state.length) else ms.coerceAtLeast(0)
         player.time = target
         state.time = target
+        seekTarget = target
+        seekGuardUntil = SystemClock.uptimeMillis() + 800
     }
 
     override fun seekBy(deltaMs: Long) = seekTo(player.time + deltaMs)
@@ -572,9 +583,19 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             ),
         )
         return PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(16, 9))
+            .setAspectRatio(videoAspect())
             .setActions(listOf(action))
             .build()
+    }
+
+    /** PiP window matches the video's shape (Android allows 1:2.39 … 2.39:1). */
+    private fun videoAspect(): Rational {
+        val track = runCatching { if (released) null else player.currentVideoTrack }.getOrNull()
+        val w = track?.width ?: 0
+        val h = track?.height ?: 0
+        if (w <= 0 || h <= 0) return Rational(16, 9)
+        val r = (w.toFloat() / h).coerceIn(1f / 2.39f + 0.01f, 2.39f - 0.01f)
+        return Rational((r * 1000).roundToInt(), 1000)
     }
 
     private fun setPipParams() {
