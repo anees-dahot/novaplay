@@ -32,6 +32,8 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -56,6 +58,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -145,6 +149,8 @@ fun HomeContent(
     onPlaylists: () -> Unit,
     onPrivate: () -> Unit,
     onHidden: () -> Unit,
+    onHistory: () -> Unit,
+    onNetwork: () -> Unit,
     onPlayFolder: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -168,15 +174,42 @@ fun HomeContent(
             }
         }
     }
-    val results = remember(query, visible) {
+    var filter by remember { mutableStateOf(SearchFilter.ALL) }
+    val results = remember(query, visible, filter, v) {
         if (query.isBlank()) emptyList()
-        else visible.filter { it.name.contains(query.trim(), ignoreCase = true) }.sortedBy { it.name.lowercase() }
+        else {
+            val q = query.trim()
+            val watched = LibraryStore.watched
+            visible.filter { it.name.contains(q, ignoreCase = true) || it.folder.contains(q, ignoreCase = true) }
+                .filter {
+                    when (filter) {
+                        SearchFilter.ALL -> true
+                        SearchFilter.UNWATCHED -> it.uri.toString() !in watched
+                        SearchFilter.IN_PROGRESS -> resume.get(it.uri.toString()) > 0
+                        SearchFilter.HD -> it.quality != null
+                        SearchFilter.LONG -> it.durationMs >= 30 * 60_000
+                        SearchFilter.SHORT -> it.durationMs in 1 until 5 * 60_000
+                    }
+                }
+                .sortedBy { it.name.lowercase() }
+        }
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
         item { SearchField(query, onQuery, Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp)) }
 
         if (query.isNotBlank()) {
+            item {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(SearchFilter.entries.size) { i ->
+                        val f = SearchFilter.entries[i]
+                        FilterPill(f.label, f == filter) { filter = f }
+                    }
+                }
+            }
             if (results.isEmpty()) item {
                 Text("No results for “$query”", style = Type.subhead, color = SecondaryText,
                     modifier = Modifier.fillMaxWidth().padding(32.dp), textAlign = TextAlign.Center)
@@ -197,6 +230,8 @@ fun HomeContent(
             ) {
                 item { Chip(Icons.Default.Favorite, "Favourites", favCount.takeIf { it > 0 }, onFavourites) }
                 item { Chip(Icons.AutoMirrored.Filled.PlaylistPlay, "Playlists", plCount.takeIf { it > 0 }, onPlaylists) }
+                item { Chip(Icons.Default.History, "History", null, onHistory) }
+                item { Chip(Icons.Default.Language, "Network", null, onNetwork) }
                 item { Chip(Icons.Default.Lock, "Private", null, onPrivate) }
                 if (hidden.isNotEmpty()) item { Chip(Icons.Default.VisibilityOff, "Hidden", hidden.size, onHidden) }
             }
@@ -234,6 +269,19 @@ fun HomeContent(
             }
         }
     }
+}
+
+enum class SearchFilter(val label: String) {
+    ALL("All"), UNWATCHED("Unwatched"), IN_PROGRESS("In progress"), HD("HD+"), LONG("30 min+"), SHORT("Under 5 min")
+}
+
+@Composable
+private fun FilterPill(label: String, on: Boolean, onClick: () -> Unit) {
+    Text(
+        label, style = Type.footnote, color = if (on) Color.Black else Color.White,
+        modifier = Modifier.clip(RoundedCornerShape(50)).background(if (on) Color.White else NavySurface)
+            .pressable(pressedScale = 0.95f, onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp),
+    )
 }
 
 /** Section title, sentence case, with optional count or trailing text action. */
@@ -497,6 +545,13 @@ private fun MetaLine(video: Video, m: Marks) {
         if (m.favourite) {
             Icon(Icons.Default.Favorite, "Favourite", tint = Color(0xFFFF375F), modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(4.dp))
+        }
+        video.quality?.let { q ->
+            Text(
+                q, style = Type.caption, color = Color(0xDDFFFFFF),
+                modifier = Modifier.border(0.5.dp, Color(0x55FFFFFF), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp),
+            )
+            Spacer(Modifier.width(6.dp))
         }
         Text(
             "${formatSize(video.size)} · ${DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(video.dateAdded * 1000))}",

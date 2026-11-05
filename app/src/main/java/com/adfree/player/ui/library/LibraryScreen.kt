@@ -97,6 +97,7 @@ object Route {
     const val PLAYLISTS = "playlists"
     const val PRIVATE = "private"
     const val HIDDEN = "hidden"
+    const val HISTORY = "history"
     fun folder(name: String) = "folder:$name"
     fun playlist(name: String) = "playlist:$name"
 }
@@ -107,16 +108,18 @@ private fun titleOf(route: String) = when {
     route == Route.PLAYLISTS -> "Playlists"
     route == Route.PRIVATE -> "Private"
     route == Route.HIDDEN -> "Hidden Folders"
+    route == Route.HISTORY -> "History"
     else -> route.substringAfter(':')
 }
 
 /** Shows video lists (vs. menus of folders/playlists). */
 private fun isVideoRoute(route: String) =
-    route.startsWith("folder:") || route.startsWith("playlist:") || route == Route.FAV || route == Route.PRIVATE
+    route.startsWith("folder:") || route.startsWith("playlist:") || route == Route.FAV || route == Route.PRIVATE ||
+        route == Route.HISTORY
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
+fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     remember { LibraryStore.init(context) }
@@ -154,6 +157,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
     var newPlaylistFor by remember { mutableStateOf<List<Video>?>(null) }
     var pinPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmDelete by remember { mutableStateOf<List<Video>?>(null) }
+    var urlPrompt by remember { mutableStateOf(false) }
 
     // Pending work that waits for Android's own "Allow?" dialog.
     var afterConfirm by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -186,6 +190,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
     LaunchedEffect(Unit) { if (!granted) permLauncher.launch(permission) }
     LaunchedEffect(granted, refreshTick) {
         if (granted) all = VideoRepository.load(context)
+        all?.minByOrNull { it.size.takeIf { s -> s > 0 } ?: Long.MAX_VALUE }?.let { com.adfree.player.VlcWarmup.runOnce(context, it.uri) }
         refreshing = false
     }
     BackHandler(enabled = stack.size > 1 || selecting) { back() }
@@ -210,6 +215,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                 LibraryStore.playlists[route.substringAfter(':')].orEmpty().mapNotNull { byUri[it] }
             route == Route.FAV -> sorted(visible.filter { it.uri.toString() in LibraryStore.favourites })
             route == Route.PRIVATE -> sorted(videos.filter { it.uri.toString() in privateSet })
+            route == Route.HISTORY -> LibraryStore.recent.mapNotNull { byUri[it] }.filter { it.uri.toString() !in privateSet }
             else -> emptyList()
         }
     }
@@ -316,6 +322,8 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                                 onPlaylists = { navigate(Route.PLAYLISTS) },
                                 onPrivate = { openPrivate() },
                                 onHidden = { navigate(Route.HIDDEN) },
+                                onHistory = { navigate(Route.HISTORY) },
+                                onNetwork = { urlPrompt = true },
                                 onPlayFolder = { f ->
                                     val list = sorted(visible.filter { it.folder == f })
                                     if (list.isNotEmpty()) onOpen(list, 0)
@@ -333,6 +341,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                                 emptyText = when {
                                     r == Route.FAV -> "Long-press a video and choose Favourite."
                                     r == Route.PRIVATE -> "Long-press a video and choose Move to Private."
+                                    r == Route.HISTORY -> "Videos you play show up here."
                                     r.startsWith("playlist:") -> "Long-press a video and choose Add to Playlist."
                                     else -> "No videos here."
                                 },
@@ -394,7 +403,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                 scope.launch { infoFor = v to MediaActions.info(context, v) }
             },
             onDelete = { menuFor = null; confirmDelete = listOf(v) },
-            onRemoveRecent = if (route == Route.HOME && v.uri.toString() in LibraryStore.recent) {
+            onRemoveRecent = if ((route == Route.HOME || route == Route.HISTORY) && v.uri.toString() in LibraryStore.recent) {
                 { menuFor = null; LibraryStore.removeRecent(listOf(v.uri.toString())) }
             } else null,
         )
@@ -464,6 +473,15 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                 }
             },
         )
+    }
+    if (urlPrompt) {
+        TextPrompt("Open Network Stream", confirm = "Play", onDismiss = { urlPrompt = false }) { url ->
+            urlPrompt = false
+            val fixed = if ("://" in url) url else "https://$url"
+            if (Uri.parse(fixed).scheme in setOf("http", "https", "rtsp", "rtmp", "smb", "ftp", "udp", "mms")) {
+                LibraryStore.addUrl(fixed); onOpenUrl(fixed)
+            } else Toast.makeText(context, "Unsupported link", Toast.LENGTH_SHORT).show()
+        }
     }
     pinPrompt?.let { then ->
         val creating = !LibraryStore.hasPin

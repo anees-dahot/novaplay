@@ -20,7 +20,22 @@ data class Video(
     val size: Long,
     val dateAdded: Long,
     val folder: String,
-)
+    val width: Int = 0,
+    val height: Int = 0,
+) {
+    /** "4K", "1080p", "720p" or null for SD/unknown. */
+    val quality: String?
+        get() {
+            val short = minOf(width, height).takeIf { it > 0 } ?: return null
+            return when {
+                short >= 2000 -> "4K"
+                short >= 1400 -> "1440p"
+                short >= 1000 -> "1080p"
+                short >= 700 -> "720p"
+                else -> null
+            }
+        }
+}
 
 object VideoRepository {
 
@@ -37,6 +52,8 @@ object VideoRepository {
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_ADDED,
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
         )
         val result = mutableListOf<Video>()
         context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
@@ -46,6 +63,8 @@ object VideoRepository {
             val sizeCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
             val dateCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
             val folderCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            val wCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
+            val hCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
             while (c.moveToNext()) {
                 val id = c.getLong(idCol)
                 result += Video(
@@ -56,6 +75,8 @@ object VideoRepository {
                     size = c.getLong(sizeCol),
                     dateAdded = c.getLong(dateCol),
                     folder = c.getString(folderCol) ?: "Internal storage",
+                    width = c.getInt(wCol),
+                    height = c.getInt(hCol),
                 )
             }
         }
@@ -71,6 +92,11 @@ object VideoRepository {
     private val gate = kotlinx.coroutines.sync.Semaphore(3)
 
     fun cachedThumb(id: Long): Bitmap? = thumbCache.get(id)
+
+    /** Called on memory pressure: halve the in-memory thumbs, or drop them all. */
+    fun trimThumbs(all: Boolean) {
+        if (all) thumbCache.evictAll() else thumbCache.trimToSize(thumbCache.size() / 2)
+    }
 
     private fun diskFile(context: Context, video: Video) =
         java.io.File(context.cacheDir, "thumbs/${video.id}_${video.size}.jpg")

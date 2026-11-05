@@ -7,6 +7,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import com.adfree.player.ui.library.LibraryScreen
 import com.adfree.player.update.UpdatePrompt
@@ -24,8 +26,11 @@ class MainActivity : ComponentActivity() {
                             .putStringArrayListExtra(PlayerActivity.EXTRA_TITLES, ArrayList(videos.map { it.name }))
                             .putExtra(PlayerActivity.EXTRA_INDEX, index)
                     )
+                }, onOpenUrl = { url ->
+                    startActivity(Intent(this, PlayerActivity::class.java).setData(android.net.Uri.parse(url)))
                 })
                 UpdatePrompt()
+                CrashPrompt()
             }
         }
     }
@@ -52,5 +57,34 @@ fun AppTheme(content: @Composable () -> Unit) {
             outline = Color(0xFF3A3A40),
         ),
         content = content,
+    )
+}
+
+/** After a crash, offer to share the log so it can be fixed. */
+@Composable
+private fun CrashPrompt() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var log by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(CrashLog.read(context)) }
+    val text = log ?: return
+    fun close() { CrashLog.clear(context); log = null }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = ::close,
+        containerColor = NavySurface,
+        title = { androidx.compose.material3.Text("NovaPlay closed unexpectedly") },
+        text = { androidx.compose.material3.Text("Share the crash report so it can be fixed? It only contains technical details, no videos or names.") },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                context.startActivity(
+                    Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(Intent.EXTRA_SUBJECT, "NovaPlay crash report")
+                            .putExtra(Intent.EXTRA_TEXT, text),
+                        "Share crash report",
+                    )
+                )
+                close()
+            }) { androidx.compose.material3.Text("Share", color = Accent) }
+        },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = ::close) { androidx.compose.material3.Text("Not now", color = Accent) } },
     )
 }

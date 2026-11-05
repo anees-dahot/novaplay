@@ -36,7 +36,7 @@ object LibraryStore {
     // ── History / watched
     /** Most recent first. */
     val recent: List<String> get() = list("recent")
-    fun markPlayed(uri: String) = putList("recent", (listOf(uri) + recent.filter { it != uri }).take(30))
+    fun markPlayed(uri: String) = putList("recent", (listOf(uri) + recent.filter { it != uri }).take(200))
     fun removeRecent(uris: Collection<String>) = putList("recent", recent - uris.toSet())
     fun clearRecent() = putList("recent", emptyList())
     val played: Set<String> get() = set("played") + recent
@@ -47,6 +47,10 @@ object LibraryStore {
     }
     fun setWatched(uris: Collection<String>, value: Boolean) =
         putSet("watched", if (value) watched + uris else watched - uris.toSet())
+
+    // ── Network streams the user opened
+    val urls: List<String> get() = list("urls")
+    fun addUrl(url: String) = putList("urls", (listOf(url) + urls.filter { it != url }).take(10))
 
     // ── Favourites
     val favourites: Set<String> get() = set("favourites")
