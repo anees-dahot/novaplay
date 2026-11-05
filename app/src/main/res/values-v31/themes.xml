@@ -4,5 +4,7 @@
         <item name="android:statusBarColor">#FF0B0B0D</item>
         <item name="android:navigationBarColor">#FF0B0B0D</item>
         <item name="android:windowSplashScreenBackground">#FF0B0B0D</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#FF2F7BFF</item>
     </style>
 </resources>

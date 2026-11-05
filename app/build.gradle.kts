@@ -8,10 +8,10 @@ plugins {
 }
 
 // Bump this for each release (release.sh does it for you).
-val appVersion = "1.4.1"
+val appVersion = "1.5.0"
 
 android {
-    namespace = "com.adfree.player"
+    namespace = "com.novaplay.player"
     compileSdk = 36
 
     defaultConfig {
@@ -50,6 +50,10 @@ android {
             signingConfig = if (keyProps.isNotEmpty()) signingConfigs.getByName("release")
                             else signingConfigs.getByName("debug")
         }
+    }
+
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
 
     // One APK per CPU type keeps each file small (libVLC ships native code).

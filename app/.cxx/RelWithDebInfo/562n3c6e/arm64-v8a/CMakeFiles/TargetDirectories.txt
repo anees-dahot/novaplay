@@ -1,0 +1,3 @@
+/Users/aneesdahot/Video Player/app/.cxx/RelWithDebInfo/562n3c6e/arm64-v8a/CMakeFiles/novastep.dir
+/Users/aneesdahot/Video Player/app/.cxx/RelWithDebInfo/562n3c6e/arm64-v8a/CMakeFiles/edit_cache.dir
+/Users/aneesdahot/Video Player/app/.cxx/RelWithDebInfo/562n3c6e/arm64-v8a/CMakeFiles/rebuild_cache.dir
