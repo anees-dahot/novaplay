@@ -42,6 +42,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.CastConnected
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SubtitlesOff
 import androidx.compose.ui.graphics.Brush
@@ -105,7 +111,7 @@ import com.adfree.player.ui.pressable
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
-private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE }
+private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST }
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
@@ -137,7 +143,15 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(factory = { c.createVideoView(it) }, modifier = Modifier.fillMaxSize())
+        AndroidView(
+            factory = { c.createVideoView(it) },
+            update = { v ->
+                // View transform (not a Compose layer) so the SurfaceView itself scales/moves.
+                v.scaleX = s.zoom; v.scaleY = s.zoom
+                v.translationX = s.panX; v.translationY = s.panY
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
 
         // Night mode: dim + warm tint over the video.
         if (s.nightMode) Box(Modifier.fillMaxSize().background(Color(0x66301600)))
@@ -239,19 +253,29 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                 Sheet.SPEED -> ChoiceList(
                     "Playback Speed", SPEEDS.map { it to "${formatRate(it)}×" }, s.rate,
                 ) { c.setRate(it); sheet = null }
-                Sheet.AUDIO -> ChoiceList(
-                    "Audio", s.audioTracks.map { it.id to it.name }, s.audioTrack,
-                ) { c.selectAudio(it); sheet = null }
+                Sheet.AUDIO -> AudioSheet(s, c)
                 Sheet.ASPECT -> ChoiceList(
                     "Aspect Ratio", VideoScale.entries.map { it to it.label }, s.scale,
-                ) { c.setScale(it); sheet = null }
+                ) { s.zoom = 1f; s.panX = 0f; s.panY = 0f; c.setScale(it); sheet = null }
+                Sheet.SLEEP -> ChoiceList(
+                    "Sleep Timer",
+                    listOf(0 to "Off", 15 to "15 minutes", 30 to "30 minutes", 45 to "45 minutes",
+                        60 to "1 hour", 90 to "1½ hours", -1 to "End of this video"),
+                    when { s.sleepAtEnd -> -1; s.sleepAt > 0 -> -2; else -> 0 },
+                ) { c.setSleep(it); sheet = null }
+                Sheet.CAST -> CastSheet(s, c, close = { sheet = null })
                 Sheet.CHAPTERS -> ChoiceList(
                     "Chapters",
                     s.chapters.map { it.timeMs to "${formatTime(it.timeMs)}   ${it.name}" },
                     s.chapters.lastOrNull { it.timeMs <= s.time }?.timeMs ?: -1L,
                 ) { c.seekTo(it); sheet = null }
                 Sheet.SUBTITLES -> SubtitleSheet(s, c, close = { sheet = null })
-                Sheet.MORE -> MoreSheet(s, c, close = { sheet = null }, openChapters = { sheet = Sheet.CHAPTERS })
+                Sheet.MORE -> MoreSheet(
+                    s, c, close = { sheet = null },
+                    openChapters = { sheet = Sheet.CHAPTERS },
+                    openSleep = { sheet = Sheet.SLEEP },
+                    openCast = { sheet = Sheet.CAST },
+                )
             }
         }
     }
@@ -284,7 +308,7 @@ private fun LevelBar(hud: Hud) {
 }
 
 /** Tap = show/hide, double-tap sides = ±10s (keep tapping to stack), hold = 2x,
- *  swipe left/right half = brightness/volume, horizontal swipe = seek, pinch = crop/fit. */
+ *  swipe left/right half = brightness/volume, horizontal swipe = seek, pinch = zoom + pan. */
 @Composable
 private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modifier {
     val haptics = LocalHapticFeedback.current
@@ -349,7 +373,8 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                 var dy = 0f
                 var seekTarget = startTime
                 var startDist = 0f
-                var endDist = 0f
+                var startZoom = 1f
+                var lastCentroid = Offset.Zero
 
                 while (true) {
                     val event = awaitPointerEvent()
@@ -357,15 +382,25 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     if (pressed.isEmpty()) break
 
                     if (pressed.size >= 2) {
-                        val dist = (pressed[0].position - pressed[1].position).getDistance()
+                        val dist = (pressed[0].position - pressed[1].position).getDistance().coerceAtLeast(1f)
+                        val centroid = (pressed[0].position + pressed[1].position) / 2f
                         if (mode != GestureMode.PINCH) {
                             if (mode == GestureMode.SEEK) s.time = startTime
                             s.seeking = false
                             s.gestureText = null
                             mode = GestureMode.PINCH
                             startDist = dist
+                            startZoom = s.zoom
+                            lastCentroid = centroid
                         }
-                        endDist = dist
+                        s.zoom = (startZoom * dist / startDist).coerceIn(1f, 4f)
+                        val pan = centroid - lastCentroid
+                        lastCentroid = centroid
+                        val maxX = (s.zoom - 1f) * size.width / 2f
+                        val maxY = (s.zoom - 1f) * size.height / 2f
+                        s.panX = (s.panX + pan.x).coerceIn(-maxX, maxX)
+                        s.panY = (s.panY + pan.y).coerceIn(-maxY, maxY)
+                        s.flash("${(s.zoom * 100).toInt()}%")
                         event.changes.forEach { it.consume() }
                         continue
                     }
@@ -411,14 +446,10 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                         s.seeking = false
                     }
                     GestureMode.PINCH -> {
-                        val target = when {
-                            endDist > startDist * 1.15f -> VideoScale.CROP
-                            endDist < startDist * 0.87f -> VideoScale.FIT
-                            else -> null
-                        }
-                        if (target != null && target != s.scale) {
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            c.setScale(target)
+                        // Snap back to normal when nearly unzoomed.
+                        if (s.zoom < 1.08f) {
+                            if (startZoom > 1f) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            s.zoom = 1f; s.panX = 0f; s.panY = 0f
                         }
                     }
                     else -> Unit
@@ -470,6 +501,7 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                     if (s.spuTrack >= 0) Icons.Default.Subtitles else Icons.Default.SubtitlesOff,
                     "Subtitles",
                 ) { onSheet(Sheet.SUBTITLES) }
+                IconBtn(if (s.castingTo != null) Icons.Default.CastConnected else Icons.Default.Cast, "Cast") { onSheet(Sheet.CAST) }
                 IconBtn(Icons.Default.PictureInPictureAlt, "Picture in picture") { c.enterPip() }
                 IconBtn(Icons.Default.MoreVert, "More") { onSheet(Sheet.MORE) }
             }
@@ -524,6 +556,18 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                         IconBtn(Icons.Default.SkipNext, "Next", enabled = s.hasNext || s.loopMode == LoopMode.ALL) {
                             c.playNext(); s.bump()
                         }
+                    }
+                    if (s.playlistSize > 1) {
+                        IconBtn(Icons.Default.Shuffle, "Shuffle", tint = if (s.shuffle) Accent else Color.White) {
+                            c.setShuffle(!s.shuffle); s.bump()
+                        }
+                    }
+                    if (!s.playing && s.started) {
+                        IconBtn(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Previous frame") { c.frameStep(false) }
+                        IconBtn(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next frame") { c.frameStep(true) }
+                    }
+                    if (s.sleepAt > 0 || s.sleepAtEnd) {
+                        IconBtn(Icons.Default.Bedtime, "Sleep timer", tint = Accent) { onSheet(Sheet.SLEEP) }
                     }
                     if (s.abStart >= 0) {
                         Text(
@@ -642,6 +686,7 @@ private fun IconBtn(
     box: Int = 44,
     iconSize: Int = 22,
     enabled: Boolean = true,
+    tint: Color = Color.White,
     onClick: () -> Unit,
 ) {
     Box(
@@ -649,7 +694,7 @@ private fun IconBtn(
             .then(if (enabled) Modifier.pressable(pressedScale = 0.85f, onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, desc, tint = if (enabled) Color.White else Color(0x4DFFFFFF), modifier = Modifier.size(iconSize.dp))
+        Icon(icon, desc, tint = if (enabled) tint else Color(0x4DFFFFFF), modifier = Modifier.size(iconSize.dp))
     }
 }
 
@@ -793,13 +838,147 @@ private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit
     Spacer(Modifier.height(20.dp))
     Text("SIZE", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
     Segmented(SUB_SCALES.map { it to "$it%" }, s.subScale) { c.setSubScale(it) }
+
+    Spacer(Modifier.height(20.dp))
+    Text("STYLE", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        SUB_COLORS.forEachIndexed { i, (name, rgb) ->
+            Box(
+                Modifier.size(34.dp).clip(CircleShape).background(Color(0xFF000000 or rgb.toLong()))
+                    .border(if (i == s.subColor) 2.5.dp else 0.5.dp, if (i == s.subColor) Accent else Color(0x33FFFFFF), CircleShape)
+                    .pressable(pressedScale = 0.9f) { c.setSubStyle(i, s.subBackground, s.subBold) },
+            ) { if (i == s.subColor) Icon(Icons.Default.Check, name, tint = Color.Black, modifier = Modifier.align(Alignment.Center).size(18.dp)) }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    Group {
+        ToggleRow("Background Box", s.subBackground) { c.setSubStyle(s.subColor, it, s.subBold) }
+        GroupDivider()
+        ToggleRow("Bold", s.subBold) { c.setSubStyle(s.subColor, s.subBackground, it) }
+    }
+    Text(
+        "Subtitles you load are remembered for that video.",
+        style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+    )
 }
 
 @Composable
-private fun MoreSheet(s: PlayerState, c: PlayerController, close: () -> Unit, openChapters: () -> Unit) {
+private fun AudioSheet(s: PlayerState, c: PlayerController) {
+    SheetTitle("Audio")
+    if (s.audioTracks.isNotEmpty()) {
+        Group {
+            s.audioTracks.forEachIndexed { i, t ->
+                Row(
+                    Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.selectAudio(t.id) }
+                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(t.name, style = Type.body, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (t.id == s.audioTrack) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(20.dp))
+                }
+                if (i < s.audioTracks.lastIndex) GroupDivider()
+            }
+        }
+    }
+
+    Spacer(Modifier.height(20.dp))
+    Text("VOLUME BOOST", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
+    Segmented(listOf(100 to "Off", 125 to "125%", 150 to "150%", 200 to "200%"), s.volumeBoost) { c.setVolumeBoost(it) }
+
+    Spacer(Modifier.height(20.dp))
+    Text("BASS BOOST", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
+    Segmented(listOf(0 to "Off", 4 to "Low", 8 to "Medium", 12 to "High"), s.bassDb) { c.setBass(it) }
+
+    Spacer(Modifier.height(20.dp))
+    Text("DELAY", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
+    Stepper("${s.audioDelayMs} ms", onMinus = { c.shiftAudioDelay(-50) }, onPlus = { c.shiftAudioDelay(50) })
+
+    Spacer(Modifier.height(20.dp))
+    Text("EQUALIZER", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
+    Group {
+        (listOf(-1 to "Off") + s.eqPresets.mapIndexed { i, n -> i to n }).forEachIndexed { i, (value, label) ->
+            Row(
+                Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.setEqPreset(value) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label, style = Type.body, color = Color.White, modifier = Modifier.weight(1f))
+                if (value == s.eqPreset) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(20.dp))
+            }
+            if (i < s.eqPresets.size) GroupDivider()
+        }
+    }
+}
+
+@Composable
+private fun Stepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit) {
+    Group {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("−", style = Type.title, color = Accent,
+                modifier = Modifier.pressable(onClick = onMinus).padding(horizontal = 16.dp, vertical = 6.dp))
+            Text(label, style = Type.body.copy(fontFeatureSettings = "tnum"), color = Color.White,
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+            Text("+", style = Type.title, color = Accent,
+                modifier = Modifier.pressable(onClick = onPlus).padding(horizontal = 16.dp, vertical = 6.dp))
+        }
+    }
+}
+
+@Composable
+private fun CastSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        c.startCastScan()
+        onDispose { if (s.castingTo == null) c.stopCastScan() }
+    }
+    SheetTitle("Cast")
+    Group {
+        Row(
+            Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.castTo(null); close() }
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("This phone", style = Type.body, color = Color.White, modifier = Modifier.weight(1f))
+            if (s.castingTo == null) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(20.dp))
+        }
+        s.renderers.forEach { name ->
+            GroupDivider()
+            Row(
+                Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.castTo(name); close() }
+                    .padding(horizontal = 16.dp, vertical = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Cast, null, tint = Secondary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(name, style = Type.body, color = Color.White, modifier = Modifier.weight(1f))
+                if (s.castingTo == name) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+    Row(Modifier.padding(start = 16.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(14.dp), color = Secondary, strokeWidth = 1.5.dp)
+        Spacer(Modifier.width(8.dp))
+        Text("Looking for Chromecast devices on this Wi-Fi…", style = Type.footnote, color = Secondary)
+    }
+}
+
+@Composable
+private fun MoreSheet(
+    s: PlayerState, c: PlayerController, close: () -> Unit,
+    openChapters: () -> Unit, openSleep: () -> Unit, openCast: () -> Unit,
+) {
     SheetTitle("Options")
     Group {
         ActionRow("Take Screenshot") { close(); c.takeScreenshot() }
+        GroupDivider()
+        ActionRow(
+            when {
+                s.sleepAtEnd -> "Sleep Timer: End of Video"
+                s.sleepAt > 0 -> "Sleep Timer: ${((s.sleepAt - System.currentTimeMillis()) / 60_000 + 1).coerceAtLeast(1)} min left"
+                else -> "Sleep Timer"
+            }
+        ) { openSleep() }
+        GroupDivider()
+        ActionRow(s.castingTo?.let { "Casting to $it" } ?: "Cast to TV") { openCast() }
         GroupDivider()
         ActionRow(
             when {
@@ -821,6 +1000,10 @@ private fun MoreSheet(s: PlayerState, c: PlayerController, close: () -> Unit, op
     Spacer(Modifier.height(20.dp))
     Group {
         ToggleRow("Auto-Play Next", s.autoNext) { c.setAutoNext(it) }
+        if (s.playlistSize > 1) {
+            GroupDivider()
+            ToggleRow("Shuffle", s.shuffle) { c.setShuffle(it) }
+        }
         GroupDivider()
         ToggleRow("Background Play", s.backgroundPlay) { c.setBackgroundPlay(it) }
         GroupDivider()

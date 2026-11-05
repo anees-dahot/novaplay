@@ -197,6 +197,21 @@ class Settings(context: Context) {
     var backgroundPlay by bool("background_play", false)
     var autoNext by bool("auto_next", true)
     var nightMode by bool("night_mode", false)
+    var shuffle by bool("shuffle", false)
+    var subBackground by bool("sub_bg", false)
+    var subBold by bool("sub_bold", false)
+
+    private fun int(key: String, def: Int) = object {
+        operator fun getValue(t: Any?, p: Any?) = prefs.getInt(key, def)
+        operator fun setValue(t: Any?, p: Any?, v: Int) = prefs.edit().putInt(key, v).apply()
+    }
+    var subColor by int("sub_color", 0)
+    var eqPreset by int("eq_preset", -1)
+    var bassDb by int("bass_db", 0)
+
+    /** Subtitle file the user loaded for a video, reloaded next time it plays. */
+    fun subtitleFor(uri: String): String? = prefs.getString("sub:$uri", null)
+    fun setSubtitleFor(uri: String, path: String) = prefs.edit().putString("sub:$uri", path).apply()
 }
 
 fun formatTime(ms: Long): String {

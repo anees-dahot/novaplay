@@ -27,6 +27,9 @@ enum class VideoScale(val label: String, val vlc: MediaPlayer.ScaleType, val rat
     ORIGINAL("100%", MediaPlayer.ScaleType.SURFACE_ORIGINAL),
 }
 
+/** Subtitle colours offered in the style picker (RGB). */
+val SUB_COLORS = listOf("White" to 0xFFFFFF, "Yellow" to 0xFFE14D, "Cyan" to 0x5AD8FF, "Green" to 0x7CFC8A)
+
 enum class LoopMode(val label: String) { OFF("Loop off"), ONE("Loop this video"), ALL("Loop all") }
 
 /** Everything the player UI shows. Updated by PlayerActivity from libVLC events. */
@@ -69,6 +72,32 @@ class PlayerState {
     var playlistIndex by mutableIntStateOf(0)
     var playlistSize by mutableIntStateOf(1)
 
+    /** Free pinch zoom (1 = off) and pan in px, applied to the video view. */
+    var zoom by mutableFloatStateOf(1f)
+    var panX by mutableFloatStateOf(0f)
+    var panY by mutableFloatStateOf(0f)
+
+    var shuffle by mutableStateOf(false)
+    /** Sleep timer: wall-clock end time, or -1 off. [sleepAtEnd] = stop when this video ends. */
+    var sleepAt by mutableLongStateOf(-1L)
+    var sleepAtEnd by mutableStateOf(false)
+
+    // Audio
+    var audioDelayMs by mutableLongStateOf(0L)
+    var volumeBoost by mutableIntStateOf(100)
+    var eqPreset by mutableIntStateOf(-1)
+    var bassDb by mutableIntStateOf(0)
+    var eqPresets by mutableStateOf<List<String>>(emptyList())
+
+    // Subtitle look
+    var subColor by mutableIntStateOf(0)
+    var subBackground by mutableStateOf(false)
+    var subBold by mutableStateOf(false)
+
+    // Casting
+    var renderers by mutableStateOf<List<String>>(emptyList())
+    var castingTo by mutableStateOf<String?>(null)
+
     var gestureText by mutableStateOf<String?>(null)
     /** Where the feedback bubble sits: -1 left half, 0 center, 1 right half (double-tap seeks). */
     var flashSide by mutableIntStateOf(0)
@@ -93,6 +122,8 @@ class PlayerState {
         audioTracks = emptyList(); spuTracks = emptyList()
         audioTrack = -1; spuTrack = -1; spuDelayMs = 0
         chapters = emptyList(); abStart = -1; abEnd = -1
+        zoom = 1f; panX = 0f; panY = 0f
+        castingTo = null
     }
 }
 
@@ -121,6 +152,19 @@ interface PlayerController {
     fun setAutoNext(enabled: Boolean)
     fun setNightMode(enabled: Boolean)
     fun takeScreenshot()
+    fun setShuffle(enabled: Boolean)
+    /** minutes > 0 = timer, 0 = off, -1 = end of current video. */
+    fun setSleep(minutes: Int)
+    fun frameStep(forward: Boolean)
+    fun shiftAudioDelay(deltaMs: Long)
+    fun setVolumeBoost(percent: Int)
+    fun setEqPreset(index: Int)
+    fun setBass(db: Int)
+    fun setSubStyle(color: Int, background: Boolean, bold: Boolean)
+    fun startCastScan()
+    fun stopCastScan()
+    /** null = stop casting, play on this phone. */
+    fun castTo(name: String?)
     /** Frame at [ms] for the seek-bar preview, or null if it can't be read. */
     suspend fun previewFrame(ms: Long): Bitmap?
     /** delta is a fraction of screen height; returns new brightness in percent. */
