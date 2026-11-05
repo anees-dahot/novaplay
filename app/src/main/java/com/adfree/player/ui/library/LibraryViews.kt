@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Folder
@@ -86,7 +87,6 @@ import com.adfree.player.ui.CardGroup
 import com.adfree.player.ui.Destructive
 import com.adfree.player.ui.Motion
 import com.adfree.player.ui.SecondaryText
-import com.adfree.player.ui.SectionLabel
 import com.adfree.player.ui.SheetAction
 import com.adfree.player.ui.SheetHeader
 import com.adfree.player.ui.Type
@@ -145,15 +145,20 @@ fun HomeContent(
     onPlaylists: () -> Unit,
     onPrivate: () -> Unit,
     onHidden: () -> Unit,
+    onPlayFolder: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val resume = remember { ResumeStore(context) }
     val marks = rememberMarks()
     val v = LibraryStore.version
     val byUri = remember(visible) { visible.associateBy { it.uri.toString() } }
-    val recent = remember(v, visible) { LibraryStore.recent.mapNotNull { byUri[it] } }
-    val continueWatching = remember(recent, v) { recent.filter { resume.get(it.uri.toString()) > 0 }.take(12) }
-    val recentlyPlayed = remember(recent) { recent.take(15) }
+    // One shelf: everything you opened recently, newest first. Finished videos drop off.
+    val continueWatching = remember(v, visible) {
+        val watched = LibraryStore.watched
+        LibraryStore.recent.mapNotNull { byUri[it] }
+            .filter { it.uri.toString() !in watched || resume.get(it.uri.toString()) > 0 }
+            .take(15)
+    }
     val folders = remember(visible, sort) {
         visible.groupBy { it.folder }.toList().let { g ->
             when (sort) {
@@ -169,70 +174,169 @@ fun HomeContent(
     }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 40.dp)) {
-        item { SearchField(query, onQuery, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+        item { SearchField(query, onQuery, Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp)) }
 
         if (query.isNotBlank()) {
             if (results.isEmpty()) item {
                 Text("No results for “$query”", style = Type.subhead, color = SecondaryText,
                     modifier = Modifier.fillMaxWidth().padding(32.dp), textAlign = TextAlign.Center)
             }
+            item { Spacer(Modifier.height(8.dp)) }
             groupedVideos(results, marks, selecting = false, selected = emptySet(),
                 onClick = { onVideo(results, it) }, onLong = { onVideoLong(results[it]) })
             return@LazyColumn
         }
 
-        if (continueWatching.isNotEmpty()) {
-            item { SectionLabel("Continue Watching") }
-            item { ShelfRow(continueWatching, marks, onClick = { onVideo(continueWatching, it) }, onLong = { onVideoLong(continueWatching[it]) }) }
-        }
-        if (recentlyPlayed.isNotEmpty()) {
-            item { SectionLabel("Recently Played") }
-            item { ShelfRow(recentlyPlayed, marks, small = true, onClick = { onVideo(recentlyPlayed, it) }, onLong = { onVideoLong(recentlyPlayed[it]) }) }
-        }
-
-        item { SectionLabel("Collections") }
         item {
             val favCount = remember(v, visible) { visible.count { it.uri.toString() in LibraryStore.favourites } }
             val plCount = remember(v) { LibraryStore.playlists.size }
             val hidden = remember(v) { LibraryStore.hiddenFolders }
-            CardGroup(Modifier.padding(horizontal = 16.dp)) {
-                NavRow(Icons.Default.Favorite, Color(0xFFFF375F), "Favourites", "$favCount", onFavourites)
-                CardDivider(62)
-                NavRow(Icons.AutoMirrored.Filled.PlaylistPlay, Color(0xFFBF5AF2), "Playlists", "$plCount", onPlaylists)
-                CardDivider(62)
-                NavRow(Icons.Default.Lock, Color(0xFF8E8E93), "Private", "", onPrivate)
-                if (hidden.isNotEmpty()) {
-                    CardDivider(62)
-                    NavRow(Icons.Default.VisibilityOff, Color(0xFF636366), "Hidden Folders", "${hidden.size}", onHidden)
-                }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item { Chip(Icons.Default.Favorite, "Favourites", favCount.takeIf { it > 0 }, onFavourites) }
+                item { Chip(Icons.AutoMirrored.Filled.PlaylistPlay, "Playlists", plCount.takeIf { it > 0 }, onPlaylists) }
+                item { Chip(Icons.Default.Lock, "Private", null, onPrivate) }
+                if (hidden.isNotEmpty()) item { Chip(Icons.Default.VisibilityOff, "Hidden", hidden.size, onHidden) }
             }
         }
 
-        item { SectionLabel("Folders") }
-        itemsIndexed(folders, key = { _, f -> "f:" + f.first }) { i, (name, vids) ->
-            Box(
-                Modifier.padding(horizontal = 16.dp).animateItem().clip(groupShape(i, folders.size)).background(NavySurface),
-            ) {
-                Column(Modifier.pressable(pressedScale = 0.98f, onLongClick = { onFolderLong(name) }) { onFolder(name) }) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconTile(Icons.Default.Folder, Brush.verticalGradient(listOf(Color(0xFF5AA2FF), Color(0xFF2F6FEB))))
-                        Spacer(Modifier.width(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(name, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val newCount = vids.count { marks(it).isNew }
-                            Text(
-                                "${vids.size} video${if (vids.size == 1) "" else "s"}" + if (newCount > 0) " · $newCount new" else "",
-                                style = Type.footnote, color = SecondaryText,
-                            )
-                        }
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Color(0x55FFFFFF))
+        if (continueWatching.isNotEmpty()) {
+            item {
+                Header("Continue watching", action = "Clear") { LibraryStore.clearRecent() }
+            }
+            item {
+                ShelfRow(continueWatching, marks,
+                    onClick = { onVideo(continueWatching, it) }, onLong = { onVideoLong(continueWatching[it]) })
+            }
+        }
+
+        item { Header("Folders", detail = "${folders.size}") }
+        if (grid) {
+            val rows = folders.chunked(2)
+            itemsIndexed(rows, key = { _, r -> "fr:" + r.first().first }) { _, row ->
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 6.dp).animateItem(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    row.forEach { (name, vids) ->
+                        FolderTile(name, vids, marks, Modifier.weight(1f),
+                            onClick = { onFolder(name) }, onLong = { onFolderLong(name) })
                     }
-                    if (i < folders.lastIndex) CardDividerLine(64)
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
                 }
+            }
+        } else {
+            itemsIndexed(folders, key = { _, f -> "f:" + f.first }) { _, (name, vids) ->
+                FolderRow(name, vids, marks, Modifier.animateItem(),
+                    onClick = { onFolder(name) }, onLong = { onFolderLong(name) }, onPlay = { onPlayFolder(name) })
             }
         }
     }
 }
+
+/** Section title, sentence case, with optional count or trailing text action. */
+@Composable
+private fun Header(title: String, detail: String? = null, action: String? = null, onAction: () -> Unit = {}) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 18.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = Type.headline, color = Color.White)
+        if (detail != null) {
+            Spacer(Modifier.width(8.dp))
+            Text(detail, style = Type.subhead, color = SecondaryText)
+        }
+        Spacer(Modifier.weight(1f))
+        if (action != null) {
+            Text(action, style = Type.subhead, color = SecondaryText,
+                modifier = Modifier.pressable(onClick = onAction).padding(horizontal = 8.dp, vertical = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun Chip(icon: ImageVector, label: String, count: Int?, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).background(NavySurface)
+            .border(0.5.dp, Color(0x14FFFFFF), RoundedCornerShape(50))
+            .pressable(pressedScale = 0.95f, onClick = onClick)
+            .padding(start = 12.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Color(0xCCFFFFFF), modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = Type.footnote.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium), color = Color.White)
+        if (count != null) {
+            Spacer(Modifier.width(6.dp))
+            Text("$count", style = Type.footnote, color = SecondaryText)
+        }
+    }
+}
+
+private fun folderSubtitle(vids: List<Video>, newCount: Int): String {
+    val total = vids.sumOf { it.durationMs }
+    return "${vids.size} video${if (vids.size == 1) "" else "s"} · ${formatSize(vids.sumOf { it.size })}" +
+        (if (total > 0) " · ${formatTime(total)}" else "") + if (newCount > 0) " · $newCount new" else ""
+}
+
+/** Folder as a cover tile: newest video's frame, name and count. */
+@Composable
+private fun FolderTile(
+    name: String, vids: List<Video>, marks: (Video) -> Marks, modifier: Modifier,
+    onClick: () -> Unit, onLong: () -> Unit,
+) {
+    val cover = remember(vids) { vids.maxBy { it.dateAdded } }
+    val newCount = vids.count { marks(it).isNew }
+    Column(modifier.pressable(pressedScale = 0.97f, onLongClick = onLong, onClick = onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 10f).clip(RoundedCornerShape(10.dp))) {
+            Thumb(cover)
+            Text(
+                "${vids.size}", style = Type.caption, color = Color.White,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
+                    .background(Color(0x99000000), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
+            )
+            if (newCount > 0) NewDot(Modifier.align(Alignment.TopStart).padding(8.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(name, style = Type.subhead.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(formatSize(vids.sumOf { it.size }), style = Type.caption, color = SecondaryText)
+    }
+}
+
+@Composable
+private fun FolderRow(
+    name: String, vids: List<Video>, marks: (Video) -> Marks, modifier: Modifier,
+    onClick: () -> Unit, onLong: () -> Unit, onPlay: () -> Unit,
+) {
+    val cover = remember(vids) { vids.maxBy { it.dateAdded } }
+    val newCount = vids.count { marks(it).isNew }
+    Row(
+        modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onLongClick = onLong, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(width = 88.dp, height = 54.dp).clip(RoundedCornerShape(8.dp))) {
+            Thumb(cover)
+            if (newCount > 0) NewDot(Modifier.align(Alignment.TopStart).padding(6.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(folderSubtitle(vids, newCount), style = Type.footnote, color = SecondaryText,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Box(Modifier.size(40.dp).pressable(pressedScale = 0.85f, onClick = onPlay), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.PlayArrow, "Play folder", tint = Color(0x99FFFFFF), modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+@Composable
+private fun NewDot(modifier: Modifier = Modifier) =
+    Box(modifier.size(8.dp).clip(CircleShape).background(Accent))
 
 @Composable
 private fun CardDividerLine(start: Int) = androidx.compose.material3.HorizontalDivider(
@@ -269,47 +373,26 @@ private fun IconTile(icon: ImageVector, brush: Brush) {
     }
 }
 
-@Composable
-private fun NavRow(icon: ImageVector, color: Color, title: String, detail: String, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconTile(icon, SolidColor(color))
-        Spacer(Modifier.width(14.dp))
-        Text(title, style = Type.body, modifier = Modifier.weight(1f))
-        Text(detail, style = Type.body, color = SecondaryText)
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Color(0x55FFFFFF))
-    }
-}
-
-/** Horizontal shelf of large cards (Continue Watching / Recently Played). */
+/** Horizontal shelf of cards (Continue watching). */
 @Composable
 private fun ShelfRow(
-    videos: List<Video>, marks: (Video) -> Marks, small: Boolean = false,
+    videos: List<Video>, marks: (Video) -> Marks,
     onClick: (Int) -> Unit, onLong: (Int) -> Unit,
 ) {
-    val w = if (small) 150.dp else 220.dp
-    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         itemsIndexed(videos, key = { _, v -> v.id }) { i, v ->
-            Column(Modifier.width(w).pressable(pressedScale = 0.96f, onLongClick = { onLong(i) }) { onClick(i) }) {
-                Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp))) {
+            val m = marks(v)
+            Column(Modifier.width(184.dp).pressable(pressedScale = 0.96f, onLongClick = { onLong(i) }) { onClick(i) }) {
+                Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(10.dp))) {
                     Thumb(v)
-                    val m = marks(v)
                     if (m.progress > 0f) ProgressBar(m.progress, Modifier.align(Alignment.BottomStart))
-                    if (!small) {
-                        Box(
-                            Modifier.align(Alignment.Center).size(40.dp).clip(CircleShape).background(Color(0x8C0B1220)),
-                            contentAlignment = Alignment.Center,
-                        ) { Icon(Icons.Default.PlayArrow, null, tint = Color.White) }
-                    }
+                    else DurationBadge(v, Modifier.align(Alignment.BottomEnd))
                 }
                 Spacer(Modifier.height(6.dp))
-                Text(v.name, style = Type.footnote, maxLines = if (small) 1 else 2, overflow = TextOverflow.Ellipsis)
-                if (!small) {
-                    val left = v.durationMs - (marks(v).progress * v.durationMs).toLong()
-                    Text("${formatTime(left)} left", style = Type.caption, color = SecondaryText)
-                }
+                Text(v.name.substringBeforeLast('.'), style = Type.footnote, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val sub = if (m.progress > 0f) "${formatTime(v.durationMs - (m.progress * v.durationMs).toLong())} left"
+                else v.folder
+                Text(sub, style = Type.caption, color = SecondaryText, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -322,8 +405,8 @@ private fun LazyListScope.groupedVideos(
     onClick: (Int) -> Unit, onLong: (Int) -> Unit,
 ) {
     itemsIndexed(videos, key = { _, v -> v.id }) { i, v ->
-        Box(Modifier.padding(horizontal = 16.dp).animateItem().clip(groupShape(i, videos.size)).background(NavySurface)) {
-            VideoRow(v, marks(v), selecting, v.id in selected, showDivider = i < videos.lastIndex,
+        Box(Modifier.animateItem()) {
+            VideoRow(v, marks(v), selecting, v.id in selected, showDivider = false,
                 onClick = { onClick(i) }, onLong = { onLong(i) })
         }
     }
@@ -364,17 +447,17 @@ private fun VideoRow(
     onClick: () -> Unit, onLong: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onLongClick = onLong, onClick = onClick)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (selecting) { SelectMark(isSelected); Spacer(Modifier.width(10.dp)) }
-            Box(Modifier.size(width = 120.dp, height = 68.dp).clip(RoundedCornerShape(10.dp))) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selecting) { SelectMark(isSelected); Spacer(Modifier.width(12.dp)) }
+            Box(Modifier.size(width = 128.dp, height = 72.dp).clip(RoundedCornerShape(8.dp))) {
                 Thumb(video)
                 DurationBadge(video, Modifier.align(Alignment.BottomEnd))
                 if (m.progress > 0f) ProgressBar(m.progress, Modifier.align(Alignment.BottomStart))
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(video.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = Type.subhead,
-                    color = if (m.watched) Color(0xFFB8C2D6) else Color.White)
+                Text(video.name.substringBeforeLast('.'), maxLines = 2, overflow = TextOverflow.Ellipsis, style = Type.subhead,
+                    color = if (m.watched) Color(0xFF9A9AA2) else Color.White)
                 MetaLine(video, m)
             }
         }
@@ -404,8 +487,7 @@ private fun VideoTile(
 private fun MetaLine(video: Video, m: Marks) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (m.isNew) {
-            Text("NEW", style = Type.caption, color = Color.White,
-                modifier = Modifier.background(Accent, RoundedCornerShape(4.dp)).padding(horizontal = 5.dp))
+            NewDot()
             Spacer(Modifier.width(6.dp))
         }
         if (m.watched) {
@@ -444,8 +526,8 @@ private fun DurationBadge(video: Video, modifier: Modifier) {
 
 @Composable
 private fun ProgressBar(progress: Float, modifier: Modifier) {
-    Box(modifier.fillMaxWidth().height(3.dp).background(Color(0x66000000))) {
-        Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(3.dp).background(Accent))
+    Box(modifier.fillMaxWidth().height(3.dp).background(Color(0x59FFFFFF))) {
+        Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(3.dp).background(Color(0xFFFF453A)))
     }
 }
 
@@ -456,7 +538,8 @@ private fun Thumb(video: Video) {
         if (value == null) value = VideoRepository.thumbnail(context, video)
     }
     val alpha by animateFloatAsState(if (bitmap != null) 1f else 0f, Motion.smooth(), label = "thumb")
-    Box(Modifier.fillMaxSize().background(NavyHigh)) {
+    Box(Modifier.fillMaxSize().background(NavyHigh), contentAlignment = Alignment.Center) {
+        if (bitmap == null) Icon(Icons.Default.Movie, null, tint = Color(0x33FFFFFF), modifier = Modifier.size(22.dp))
         bitmap?.let { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, alpha = alpha, modifier = Modifier.fillMaxSize()) }
     }
 }
@@ -475,7 +558,7 @@ fun PlaylistsContent(onOpen: (String) -> Unit, onLong: (String) -> Unit, onNew: 
             Box(Modifier.animateItem().clip(groupShape(i, lists.size)).background(NavySurface)) {
                 Column(Modifier.pressable(pressedScale = 0.98f, onLongClick = { onLong(name) }) { onOpen(name) }) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconTile(Icons.AutoMirrored.Filled.PlaylistPlay, SolidColor(Color(0xFFBF5AF2)))
+                        IconTile(Icons.AutoMirrored.Filled.PlaylistPlay, SolidColor(NavyHigh))
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
                             Text(name, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -513,6 +596,7 @@ fun VideoMenu(
     video: Video, route: String, onDismiss: () -> Unit,
     onPlay: () -> Unit, onSelect: () -> Unit, onAddToPlaylist: () -> Unit, onPrivate: (Boolean) -> Unit,
     onRename: () -> Unit, onShare: () -> Unit, onInfo: () -> Unit, onDelete: () -> Unit,
+    onRemoveRecent: (() -> Unit)? = null,
 ) {
     val key = video.uri.toString()
     val v = LibraryStore.version
@@ -532,6 +616,10 @@ fun VideoMenu(
             SheetAction("Play", Icons.Default.PlayArrow, onClick = onPlay)
             CardDivider()
             SheetAction("Select", Icons.Default.CheckCircle, onClick = onSelect)
+            if (onRemoveRecent != null) {
+                CardDivider()
+                SheetAction("Remove from Continue watching", Icons.Default.Close, onClick = onRemoveRecent)
+            }
         }
         Spacer(Modifier.height(16.dp))
         CardGroup {

@@ -40,7 +40,7 @@ import com.adfree.player.Accent
 import com.adfree.player.NavyHigh
 import com.adfree.player.NavySurface
 
-val SecondaryText = Color(0xFF8E9BB5)
+val SecondaryText = Color(0xFF8E8E96)
 val Destructive = Color(0xFFFF453A)
 
 @OptIn(ExperimentalMaterial3Api::class)

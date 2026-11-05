@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import android.util.LruCache
 import android.util.Size
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 data class Video(
@@ -61,40 +62,83 @@ object VideoRepository {
         result
     }
 
-    private val thumbCache = object : LruCache<Long, Bitmap>(16 * 1024 * 1024) {
+    private val thumbCache = object : LruCache<Long, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: Long, value: Bitmap) = value.byteCount
     }
+    /** Videos we already failed on this session: don't hammer the decoder again. */
+    private val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+    /** Hardware decoders are few; too many parallel frame grabs make them all fail. */
+    private val gate = kotlinx.coroutines.sync.Semaphore(3)
 
     fun cachedThumb(id: Long): Bitmap? = thumbCache.get(id)
 
+    private fun diskFile(context: Context, video: Video) =
+        java.io.File(context.cacheDir, "thumbs/${video.id}_${video.size}.jpg")
+
     suspend fun thumbnail(context: Context, video: Video): Bitmap? = withContext(Dispatchers.IO) {
         thumbCache.get(video.id)?.let { return@withContext it }
-        val bmp = runCatching {
-            if (Build.VERSION.SDK_INT >= 29) {
-                context.contentResolver.loadThumbnail(video.uri, Size(320, 180), null)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaStore.Video.Thumbnails.getThumbnail(
-                    context.contentResolver, video.id,
-                    MediaStore.Video.Thumbnails.MINI_KIND, null,
-                )
-            }
-        }.getOrNull() ?: frameFallback(context, video)
-        bmp?.also { thumbCache.put(video.id, it) }
+        val file = diskFile(context, video)
+        if (file.exists()) {
+            android.graphics.BitmapFactory.decodeFile(file.path)?.let { thumbCache.put(video.id, it); return@withContext it }
+        }
+        if (video.id in failed) return@withContext null
+        val bmp = gate.withPermit {
+            thumbCache.get(video.id) ?: (systemThumb(context, video) ?: frameGrab(context, video))
+        }
+        if (bmp == null) { failed += video.id; return@withContext null }
+        thumbCache.put(video.id, bmp)
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+        }
+        bmp
     }
 
-    /** Some phones can't thumbnail MKV/HEVC; grab a frame directly instead. */
-    private fun frameFallback(context: Context, video: Video): Bitmap? = runCatching {
-        context.contentResolver.openFileDescriptor(video.uri, "r")!!.use { pfd ->
-            val r = android.media.MediaMetadataRetriever()
-            try {
-                r.setDataSource(pfd.fileDescriptor)
-                val at = (video.durationMs / 10).coerceAtLeast(1000) * 1000
-                val f = r.getFrameAtTime(at, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return@use null
-                Bitmap.createScaledBitmap(f, 320, (320f * f.height / f.width).toInt().coerceAtLeast(1), true)
-            } finally { r.release() }
+    private fun systemThumb(context: Context, video: Video): Bitmap? = runCatching {
+        if (Build.VERSION.SDK_INT >= 29) {
+            context.contentResolver.loadThumbnail(video.uri, Size(384, 216), null)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Thumbnails.getThumbnail(
+                context.contentResolver, video.id, MediaStore.Video.Thumbnails.MINI_KIND, null,
+            )
         }
+    }.getOrNull()?.takeUnless { isBlank(it) }
+
+    /** Some phones can't thumbnail MKV/HEVC via MediaStore; grab a frame directly instead. */
+    private fun frameGrab(context: Context, video: Video): Bitmap? = runCatching {
+        val r = android.media.MediaMetadataRetriever()
+        try {
+            r.setDataSource(context, video.uri)
+            val dur = video.durationMs.takeIf { it > 0 }
+                ?: r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            // Try a few points: early frames are often black intros.
+            val points = listOf(dur / 10, dur / 3, 1000L, 0L).map { it.coerceAtLeast(0) * 1000 }.distinct()
+            var frame: Bitmap? = null
+            for (us in points) {
+                val f = if (Build.VERSION.SDK_INT >= 27) {
+                    r.getScaledFrameAtTime(us, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 384, 216)
+                } else r.getFrameAtTime(us, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                if (f != null && !isBlank(f)) { frame = f; break }
+                if (frame == null) frame = f
+            }
+            frame?.let {
+                if (it.width <= 384) it
+                else Bitmap.createScaledBitmap(it, 384, (384f * it.height / it.width).toInt().coerceAtLeast(1), true)
+            }
+        } finally { r.release() }
     }.getOrNull()
+
+    /** True for an (almost) all-black frame. Samples a 6x6 grid. */
+    private fun isBlank(b: Bitmap): Boolean = runCatching {
+        if (Build.VERSION.SDK_INT >= 26 && b.config == Bitmap.Config.HARDWARE) return@runCatching false
+        var lit = 0
+        for (x in 1..6) for (y in 1..6) {
+            val c = b.getPixel((b.width * x / 7).coerceIn(0, b.width - 1), (b.height * y / 7).coerceIn(0, b.height - 1))
+            if (((c shr 16) and 0xFF) + ((c shr 8) and 0xFF) + (c and 0xFF) > 60) lit++
+        }
+        lit < 3
+    }.getOrDefault(false)
 }
 
 /** Remembers where you stopped watching each video. */

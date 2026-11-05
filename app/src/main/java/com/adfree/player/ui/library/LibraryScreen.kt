@@ -27,7 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
@@ -43,7 +43,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -136,7 +136,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
     }
     var forward by remember { mutableStateOf(true) }
     val route = stack.last()
-    var sort by rememberSaveable { mutableStateOf(SortBy.DATE) }
+    var sort by rememberSaveable { mutableStateOf(runCatching { SortBy.valueOf(LibraryStore.sortKey) }.getOrDefault(SortBy.DATE)) }
     var sortMenu by remember { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
 
@@ -216,27 +216,27 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
     val selectedVideos = routeVideos.filter { it.id in selected } +
         (if (route == Route.HOME) visible.filter { it.id in selected } else emptyList())
 
-    val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val scroll = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         containerColor = Navy,
         topBar = {
-            LargeTopAppBar(
+            TopAppBar(
                 scrollBehavior = scroll,
-                colors = TopAppBarDefaults.largeTopAppBarColors(containerColor = Navy, scrolledContainerColor = NavySurface),
+                expandedHeight = 56.dp,
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Navy, scrolledContainerColor = NavySurface),
                 title = {
                     Text(
-                        if (selecting) "${selected.size} Selected" else titleOf(route),
-                        style = if (scroll.state.collapsedFraction > 0.5f) Type.headline else Type.largeTitle,
+                        if (selecting) "${selected.size} selected" else if (route == Route.HOME) "NovaPlay" else titleOf(route),
+                        style = if (route == Route.HOME && !selecting) Type.title else Type.headline,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 },
                 navigationIcon = {
                     if (stack.size > 1 && !selecting) {
-                        Row(Modifier.padding(start = 8.dp).pressable { back() }, verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBackIos, "Back", tint = Accent, modifier = Modifier.size(18.dp))
-                            Text(titleOf(stack[stack.lastIndex - 1]), color = Accent, style = Type.body, maxLines = 1)
+                        IconButton(onClick = { back() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
                         }
                     }
                 },
@@ -252,17 +252,17 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                         IconButton(onClick = { LibraryStore.gridView = !LibraryStore.gridView }) {
                             Icon(
                                 if (LibraryStore.gridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
-                                "Toggle grid", tint = Accent,
+                                "Toggle grid", tint = Color(0xDDFFFFFF),
                             )
                         }
                         Box {
-                            IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Accent) }
+                            IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Sort", tint = Color(0xDDFFFFFF)) }
                             DropdownMenu(sortMenu, { sortMenu = false }, containerColor = NavyHigh, shape = RoundedCornerShape(14.dp)) {
                                 SortBy.entries.forEach { o ->
                                     DropdownMenuItem(
                                         text = { Text(o.label, style = Type.body) },
                                         trailingIcon = { if (o == sort) Icon(Icons.Default.Check, null, tint = Accent) },
-                                        onClick = { sort = o; sortMenu = false },
+                                        onClick = { sort = o; LibraryStore.sortKey = o.name; sortMenu = false },
                                     )
                                 }
                             }
@@ -316,6 +316,10 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                                 onPlaylists = { navigate(Route.PLAYLISTS) },
                                 onPrivate = { openPrivate() },
                                 onHidden = { navigate(Route.HIDDEN) },
+                                onPlayFolder = { f ->
+                                    val list = sorted(visible.filter { it.folder == f })
+                                    if (list.isNotEmpty()) onOpen(list, 0)
+                                },
                             )
                             r == Route.PLAYLISTS -> PlaylistsContent(
                                 onOpen = { navigate(Route.playlist(it)) },
@@ -390,6 +394,9 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit) {
                 scope.launch { infoFor = v to MediaActions.info(context, v) }
             },
             onDelete = { menuFor = null; confirmDelete = listOf(v) },
+            onRemoveRecent = if (route == Route.HOME && v.uri.toString() in LibraryStore.recent) {
+                { menuFor = null; LibraryStore.removeRecent(listOf(v.uri.toString())) }
+            } else null,
         )
     }
     folderMenuFor?.let { f ->

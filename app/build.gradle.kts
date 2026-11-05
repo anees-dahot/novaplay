@@ -8,7 +8,7 @@ plugins {
 }
 
 // Bump this for each release (release.sh does it for you).
-val appVersion = "1.2.1"
+val appVersion = "1.3.0"
 
 android {
     namespace = "com.adfree.player"

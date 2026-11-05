@@ -31,10 +31,10 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-val Accent = Color(0xFF0A84FF)      // system blue accent
-val Navy = Color(0xFF05080F)        // app background
-val NavySurface = Color(0xFF0F1B33) // cards, bars, dialogs
-val NavyHigh = Color(0xFF17284A)    // raised elements / thumb placeholders
+val Accent = Color(0xFF3D8BFF)      // single accent, used sparingly
+val Navy = Color(0xFF0B0B0D)        // app background (neutral graphite, not tinted)
+val NavySurface = Color(0xFF161618) // cards, bars, dialogs
+val NavyHigh = Color(0xFF232327)    // raised elements / thumb placeholders
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
@@ -48,8 +48,8 @@ fun AppTheme(content: @Composable () -> Unit) {
             surfaceContainerHigh = NavySurface,
             surfaceContainerHighest = NavyHigh,
             surfaceVariant = NavyHigh,
-            onSurfaceVariant = Color(0xFF9DB0D0),
-            outline = Color(0xFF3A4E75),
+            onSurfaceVariant = Color(0xFF9A9AA2),
+            outline = Color(0xFF3A3A40),
         ),
         content = content,
     )

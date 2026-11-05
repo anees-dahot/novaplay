@@ -37,6 +37,8 @@ object LibraryStore {
     /** Most recent first. */
     val recent: List<String> get() = list("recent")
     fun markPlayed(uri: String) = putList("recent", (listOf(uri) + recent.filter { it != uri }).take(30))
+    fun removeRecent(uris: Collection<String>) = putList("recent", recent - uris.toSet())
+    fun clearRecent() = putList("recent", emptyList())
     val played: Set<String> get() = set("played") + recent
     val watched: Set<String> get() = set("watched")
     fun markWatched(uri: String) {
@@ -97,6 +99,10 @@ object LibraryStore {
     var gridView: Boolean
         get() = prefs.getBoolean("grid", false)
         set(v) { prefs.edit().putBoolean("grid", v).apply(); changed() }
+
+    var sortKey: String
+        get() = prefs.getString("sort", "DATE")!!
+        set(v) { prefs.edit().putString("sort", v).apply(); changed() }
 
     /** Forget a deleted/renamed video everywhere. */
     fun forget(uris: Collection<String>) {

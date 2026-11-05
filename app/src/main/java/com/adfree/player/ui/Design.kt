@@ -41,7 +41,7 @@ object Motion {
 
 object Glass {
     /** Dark translucent material for floating controls over video. */
-    val fill = Color(0x8C0B1220)
+    val fill = Color(0xB3141416)
     /** Thin bright edge = light catching the material. */
     val edge = Color(0x26FFFFFF)
 }
