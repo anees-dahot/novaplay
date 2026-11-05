@@ -93,12 +93,20 @@ object Updater {
                 file.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
                     var done = 0L
+                    var lastPct = -1
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
                         out.write(buf, 0, n)
                         done += n
-                        if (total > 0) onProgress(done.toFloat() / total)
+                        if (total > 0) {
+                            val f = (done.toFloat() / total).coerceIn(0f, 1f)
+                            val pct = (f * 100).toInt()
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                withContext(Dispatchers.Main) { onProgress(f) }
+                            }
+                        }
                     }
                 }
             }
@@ -106,13 +114,13 @@ object Updater {
         }
 
     /** Hands the APK to Android's installer (user taps "Update" once). */
-    fun install(context: Context, apk: File) {
+    fun install(context: Context, apk: File) = runCatching {
         if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
             context.startActivity(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
-            return
+            return@runCatching
         }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", apk)
         context.startActivity(
@@ -120,7 +128,7 @@ object Updater {
                 .setDataAndType(uri, "application/vnd.android.package-archive")
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         )
-    }
+    }.isSuccess
 }
 
 /** Checks once per app launch and offers the update in a dialog. */
@@ -149,7 +157,7 @@ fun UpdatePrompt() {
                     )
                     val mb = r.size / 1_048_576f
                     Text(
-                        "Downloading… ${(progress * 100).toInt()}%  ·  %.1f of %.1f MB".format(progress * mb, mb),
+                        "Downloading… %d%%  ·  %.1f of %.1f MB".format((progress * 100).toInt(), progress * mb, mb),
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
@@ -161,12 +169,18 @@ fun UpdatePrompt() {
             TextButton(
                 enabled = progress < 0 || apk != null,
                 onClick = {
-                    apk?.let { Updater.install(context, it); return@TextButton }
+                    apk?.let {
+                        if (!Updater.install(context, it)) error = "Couldn't open installer."
+                        return@TextButton
+                    }
                     progress = 0f
                     error = null
                     scope.launch {
                         runCatching { Updater.download(context, r) { p -> progress = p } }
-                            .onSuccess { apk = it; Updater.install(context, it) }
+                            .onSuccess {
+                                apk = it
+                                if (!Updater.install(context, it)) error = "Couldn't open installer."
+                            }
                             .onFailure { error = "Download failed. Check your connection."; progress = -1f }
                     }
                 },
