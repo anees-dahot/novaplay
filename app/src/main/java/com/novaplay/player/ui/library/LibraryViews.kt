@@ -114,7 +114,7 @@ private fun groupShape(i: Int, count: Int) = when {
 }
 
 /** Badges shared by rows and tiles. */
-private data class Marks(val progress: Float, val isNew: Boolean, val watched: Boolean, val favourite: Boolean)
+private data class Marks(val progress: Float, val isNew: Boolean, val watched: Boolean, val favourite: Boolean, val lastPlayed: Boolean = false)
 
 @Composable
 private fun rememberMarks(): (Video) -> Marks {
@@ -124,6 +124,7 @@ private fun rememberMarks(): (Video) -> Marks {
     val played = remember(v) { LibraryStore.played }
     val watched = remember(v) { LibraryStore.watched }
     val favs = remember(v) { LibraryStore.favourites }
+    val last = remember(v) { LibraryStore.recent.firstOrNull() }
     val now = System.currentTimeMillis() / 1000
     return { video ->
         val key = video.uri.toString()
@@ -133,6 +134,7 @@ private fun rememberMarks(): (Video) -> Marks {
             isNew = key !in played && now - video.dateAdded < WEEK_SECONDS,
             watched = key in watched,
             favourite = key in favs,
+            lastPlayed = key == last,
         )
     }
 }
@@ -561,7 +563,7 @@ private fun VideoRow(
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(video.name.substringBeforeLast('.'), maxLines = 2, overflow = TextOverflow.Ellipsis, style = Type.subhead,
-                    color = if (m.watched) Color(0xFF9A9AA2) else Color.White)
+                    color = when { m.lastPlayed -> Accent; m.watched -> Color(0xFF9A9AA2); else -> Color.White })
                 MetaLine(video, m)
             }
         }
@@ -582,7 +584,8 @@ private fun VideoTile(
             if (selecting) Box(Modifier.align(Alignment.TopEnd).padding(6.dp)) { SelectMark(isSelected) }
         }
         Spacer(Modifier.height(6.dp))
-        Text(video.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = Type.footnote)
+        Text(video.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = Type.footnote,
+            color = if (m.lastPlayed) Accent else Color.White)
         MetaLine(video, m)
     }
 }

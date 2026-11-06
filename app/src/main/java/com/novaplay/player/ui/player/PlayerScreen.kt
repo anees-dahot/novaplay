@@ -199,6 +199,29 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
             }
         }
 
+        // "Resumed at 12:34 · Start over" pill for the first seconds after resuming.
+        LaunchedEffect(s.resumedFrom, s.started) {
+            if (s.started && s.resumedFrom > 0) { delay(6000); s.resumedFrom = -1L }
+        }
+        AnimatedVisibility(
+            visible = s.started && s.resumedFrom > 0 && !s.locked,
+            enter = fadeIn(Motion.smooth()),
+            exit = fadeOut(Motion.smooth()),
+            modifier = Modifier.align(Alignment.BottomStart)
+                .windowInsetsPadding(WindowInsets.displayCutout).padding(start = 24.dp, bottom = 120.dp),
+        ) {
+            Row(
+                Modifier.background(Color(0xE6161618), RoundedCornerShape(50))
+                    .pressable(pressedScale = 0.96f) { c.seekTo(0); s.resumedFrom = -1L; s.bump() }
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Resumed at ${formatTime(s.resumedFrom.coerceAtLeast(0))}", color = Dim, style = Type.footnote)
+                Spacer(Modifier.width(10.dp))
+                Text("Start over", color = Accent, style = Type.footnote.copy(fontWeight = FontWeight.SemiBold))
+            }
+        }
+
         // "Up next" card in the last 10 s when auto-play will open another video.
         val remaining = s.length - s.time
         val showUpNext = s.nextTitle != null && s.autoNext && !s.upNextCancelled && !s.locked &&

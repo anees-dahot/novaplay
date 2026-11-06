@@ -51,6 +51,8 @@ class PlayerState {
     var nextTitle by mutableStateOf<String?>(null)
     /** User dismissed the "Up next" card: stop at the end of this video. */
     var upNextCancelled by mutableStateOf(false)
+    /** Position playback resumed from (ms), or -1. Drives the "Start over" pill. */
+    var resumedFrom by mutableLongStateOf(-1L)
     /** Bookmarked positions (ms) for the current video, ascending. */
     var bookmarks by mutableStateOf<List<Long>>(emptyList())
     var holdingFast by mutableStateOf(false)

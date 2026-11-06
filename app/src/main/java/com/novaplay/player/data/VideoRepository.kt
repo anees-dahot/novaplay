@@ -202,6 +202,11 @@ class Settings(context: Context) {
         get() = prefs.getInt("loop_mode", 0)
         set(v) = prefs.edit().putInt("loop_mode", v).apply()
 
+    /** Playback speed ×100, kept between sessions. */
+    var speed: Int
+        get() = prefs.getInt("speed", 100)
+        set(v) = prefs.edit().putInt("speed", v).apply()
+
     var hwDecoder by bool("hw_decoder", true)
     var backgroundPlay by bool("background_play", false)
     var autoNext by bool("auto_next", true)

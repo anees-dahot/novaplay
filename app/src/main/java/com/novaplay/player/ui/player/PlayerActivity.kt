@@ -143,6 +143,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.nightMode = settings.nightMode
         state.loopMode = LoopMode.entries[settings.loopMode.coerceIn(0, 2)]
         state.shuffle = settings.shuffle
+        state.rate = settings.speed / 100f
         state.subColor = settings.subColor.coerceIn(0, SUB_COLORS.lastIndex)
         state.subBackground = settings.subBackground
         state.subBold = settings.subBold
@@ -227,6 +228,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         }
         media.setHWDecoderEnabled(state.hwDecoder, false)
         if (startMs > RESUME_MIN_MS) media.addOption(":start-time=${startMs / 1000.0}")
+        state.resumedFrom = if (startMs > RESUME_MIN_MS) startMs else -1L
         player.media = media
         media.release()
         // Re-attach a subtitle file the user picked for this video before.
@@ -421,6 +423,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun setRate(rate: Float) {
         state.rate = rate
+        settings.speed = (rate * 100).toInt()
         player.rate = rate
     }
 
