@@ -201,6 +201,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.title = videoTitle
         state.nextTitle = if (index < uris.lastIndex && !state.shuffle) titles.getOrNull(index + 1) else null
         state.bookmarks = loadBookmarks()
+        state.queue = titles
         state.playlistIndex = index
         state.playlistSize = uris.size
         libVLC = LibVLC(
@@ -321,6 +322,10 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         // Ignore a second tap within 2s of an existing bookmark.
         if (state.bookmarks.none { kotlin.math.abs(it - t) < 2000 }) saveBookmarks(state.bookmarks + t)
         state.flash("Bookmarked ${com.novaplay.player.data.formatTime(t)}")
+    }
+
+    override fun playAt(index: Int) {
+        if (index in uris.indices && index != this.index) switchTo(index)
     }
 
     override fun removeBookmark(ms: Long) = saveBookmarks(state.bookmarks - ms)

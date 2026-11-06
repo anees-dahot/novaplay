@@ -49,6 +49,8 @@ class PlayerState {
 
     /** Title of the video auto-play will open next, or null when there is none. */
     var nextTitle by mutableStateOf<String?>(null)
+    /** Titles of everything in this play session, in order. */
+    var queue by mutableStateOf<List<String>>(emptyList())
     /** User dismissed the "Up next" card: stop at the end of this video. */
     var upNextCancelled by mutableStateOf(false)
     /** Position playback resumed from (ms), or -1. Drives the "Start over" pill. */
@@ -196,6 +198,7 @@ interface PlayerController {
     fun adjustVolume(delta: Float): Int
     fun endGesture()
     fun toggleRotation()
+    fun playAt(index: Int)
     fun addBookmark()
     fun removeBookmark(ms: Long)
     fun back()

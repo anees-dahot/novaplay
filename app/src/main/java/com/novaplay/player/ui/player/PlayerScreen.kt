@@ -113,7 +113,7 @@ import com.novaplay.player.ui.pressable
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
-private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS, BOOKMARKS }
+private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS, BOOKMARKS, QUEUE }
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
@@ -316,9 +316,13 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                 Sheet.SUBTITLES -> SubtitleSheet(s, c, close = { sheet = null }, openOnline = { sheet = Sheet.ONLINE_SUBS })
                 Sheet.ONLINE_SUBS -> OnlineSubsSheet(s, c, close = { sheet = null })
                 Sheet.BOOKMARKS -> BookmarksSheet(s, c, close = { sheet = null })
+                Sheet.QUEUE -> ChoiceList(
+                    "Playing Next", s.queue.mapIndexed { i, t -> i to "${i + 1}.  ${t.substringBeforeLast('.')}" }, s.playlistIndex,
+                ) { c.playAt(it); sheet = null }
                 Sheet.MORE -> MoreSheet(
                     s, c, close = { sheet = null },
                     openBookmarks = { sheet = Sheet.BOOKMARKS },
+                    openQueue = { sheet = Sheet.QUEUE },
                     openChapters = { sheet = Sheet.CHAPTERS },
                     openSleep = { sheet = Sheet.SLEEP },
                     openCast = { sheet = Sheet.CAST },
@@ -537,7 +541,10 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = c::back)
-                Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
+                Column(
+                    Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)
+                        .then(if (s.playlistSize > 1) Modifier.pressable(pressedScale = 0.98f) { onSheet(Sheet.QUEUE) } else Modifier),
+                ) {
                     Text(s.title, color = Color.White, style = Type.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(statusLine(s), color = Dim, style = Type.caption.copy(fontFeatureSettings = "tnum"), maxLines = 1)
                 }
@@ -1019,13 +1026,17 @@ private fun CastSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
 @Composable
 private fun MoreSheet(
     s: PlayerState, c: PlayerController, close: () -> Unit,
-    openChapters: () -> Unit, openSleep: () -> Unit, openCast: () -> Unit, openBookmarks: () -> Unit,
+    openChapters: () -> Unit, openSleep: () -> Unit, openCast: () -> Unit, openBookmarks: () -> Unit, openQueue: () -> Unit,
 ) {
     SheetTitle("Options")
     Group {
         ActionRow("Take Screenshot") { close(); c.takeScreenshot() }
         GroupDivider()
         ActionRow(if (s.bookmarks.isEmpty()) "Bookmarks" else "Bookmarks (${s.bookmarks.size})") { openBookmarks() }
+        if (s.playlistSize > 1) {
+            GroupDivider()
+            ActionRow("Play Queue (${s.playlistSize})") { openQueue() }
+        }
         GroupDivider()
         ActionRow(
             when {
