@@ -33,6 +33,8 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Lock
@@ -88,7 +90,22 @@ import com.novaplay.player.ui.glass
 import com.novaplay.player.ui.pressable
 import kotlinx.coroutines.launch
 
-enum class SortBy(val label: String) { DATE("Newest"), NAME("Name"), SIZE("Size") }
+enum class SortBy(val label: String) { DATE("Newest"), NAME("Name"), SIZE("Size"), LENGTH("Longest") }
+
+/** "Ep 2" before "Ep 10": compares digit runs as numbers, rest case-insensitively. */
+val NaturalOrder: Comparator<String> = Comparator { a, b ->
+    val chunk = Regex("\\d+|\\D+")
+    val x = chunk.findAll(a.lowercase()).map { it.value }.toList()
+    val y = chunk.findAll(b.lowercase()).map { it.value }.toList()
+    for (i in 0 until minOf(x.size, y.size)) {
+        val p = x[i]; val q = y[i]
+        val c = if (p[0].isDigit() && q[0].isDigit()) {
+            p.trimStart('0').length.compareTo(q.trimStart('0').length).takeIf { it != 0 } ?: p.trimStart('0').compareTo(q.trimStart('0'))
+        } else p.compareTo(q)
+        if (c != 0) return@Comparator c
+    }
+    x.size.compareTo(y.size)
+}
 
 /** Screens, encoded as strings so the back stack survives rotation. */
 object Route {
@@ -158,6 +175,10 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     var pinPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmDelete by remember { mutableStateOf<List<Video>?>(null) }
     var urlPrompt by remember { mutableStateOf(false) }
+    // Copy / move: picker target (videos, isMove), new-folder prompt, running progress.
+    var fileOpFor by remember { mutableStateOf<Pair<List<Video>, Boolean>?>(null) }
+    var newFolderFor by remember { mutableStateOf<Pair<List<Video>, Boolean>?>(null) }
+    var opProgress by remember { mutableStateOf<Pair<String, Float>?>(null) }
 
     // Pending work that waits for Android's own "Allow?" dialog.
     var afterConfirm by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -180,6 +201,30 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     fun back() {
         if (selecting) { selecting = false; selected.clear(); return }
         if (stack.size > 1) { forward = false; stack.removeAt(stack.lastIndex) }
+    }
+    fun runFileOp(list: List<Video>, move: Boolean, dest: Destination) {
+        val label = if (move) "Moving…" else "Copying…"
+        fun go() {
+            scope.launch {
+                opProgress = label to 0f
+                var replaced = emptyList<android.net.Uri>()
+                val result = if (move) {
+                    MediaActions.move(context, list, dest.path) { p -> opProgress = label to p }.also { replaced = it.second }.first
+                } else MediaActions.copy(context, list, dest.path) { p -> opProgress = label to p }
+                opProgress = null
+                if (replaced.isNotEmpty()) LibraryStore.forget(replaced.map { it.toString() })
+                selecting = false; selected.clear(); refreshTick++
+                when (result) {
+                    ActionResult.Done -> Toast.makeText(
+                        context,
+                        "${if (move) "Moved" else "Copied"} ${list.size} video${if (list.size == 1) "" else "s"} to ${dest.name}",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    else -> handle(result) { go() }
+                }
+            }
+        }
+        if (move) handle(MediaActions.requestWrite(context, list.map { it.uri })) { go() } else go()
     }
     fun openPrivate() {
         if (LibraryStore.privateUnlocked) navigate(Route.PRIVATE)
@@ -204,9 +249,10 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
         videos.filter { it.uri.toString() !in privateSet && it.folder !in hiddenSet }
     }
     fun sorted(list: List<Video>) = when (sort) {
-        SortBy.NAME -> list.sortedBy { it.name.lowercase() }
+        SortBy.NAME -> list.sortedWith(compareBy(NaturalOrder) { it.name })
         SortBy.DATE -> list.sortedByDescending { it.dateAdded }
         SortBy.SIZE -> list.sortedByDescending { it.size }
+        SortBy.LENGTH -> list.sortedByDescending { it.durationMs }
     }
     val routeVideos: List<Video> = remember(route, videos, storeVersion, sort) {
         when {
@@ -218,6 +264,13 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             route == Route.HISTORY -> LibraryStore.recent.mapNotNull { byUri[it] }.filter { it.uri.toString() !in privateSet }
             else -> emptyList()
         }
+    }
+    val destinations = remember(videos) {
+        val known = videos.filter { it.path.isNotEmpty() }.distinctBy { it.path.lowercase() }
+            .map { Destination(it.folder, it.path) }
+        val defaults = listOf(Destination("Movies", "Movies/"), Destination("Download", "Download/"))
+            .filter { d -> known.none { it.path.equals(d.path, ignoreCase = true) } }
+        (known + defaults).sortedBy { it.name.lowercase() }
     }
     val selectedVideos = routeVideos.filter { it.id in selected } +
         (if (route == Route.HOME) visible.filter { it.id in selected } else emptyList())
@@ -247,6 +300,16 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                     }
                 },
                 actions = {
+                    if (selecting && routeVideos.isNotEmpty()) {
+                        val allOn = routeVideos.all { it.id in selected }
+                        Text(
+                            if (allOn) "None" else "All",
+                            color = Accent, style = Type.headline,
+                            modifier = Modifier.pressable {
+                                selected.clear(); if (!allOn) selected.addAll(routeVideos.map { it.id })
+                            }.padding(horizontal = 10.dp),
+                        )
+                    }
                     if (isVideoRoute(route) && routeVideos.isNotEmpty()) {
                         Text(
                             if (selecting) "Done" else "Select",
@@ -375,6 +438,8 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                         val act = { LibraryStore.setPrivate(uris, !inPrivate); selecting = false; selected.clear() }
                         if (!inPrivate && !LibraryStore.hasPin) pinPrompt = act else act()
                     }
+                    BarIcon(Icons.Default.ContentCopy, "Copy to", enabled) { fileOpFor = selectedVideos to false }
+                    BarIcon(Icons.AutoMirrored.Filled.DriveFileMove, "Move to", enabled) { fileOpFor = selectedVideos to true }
                     BarIcon(Icons.Default.Delete, "Delete", enabled, Destructive) { confirmDelete = selectedVideos }
                 }
             }
@@ -403,6 +468,8 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                 scope.launch { infoFor = v to MediaActions.info(context, v) }
             },
             onDelete = { menuFor = null; confirmDelete = listOf(v) },
+            onCopy = { menuFor = null; fileOpFor = listOf(v) to false },
+            onMove = { menuFor = null; fileOpFor = listOf(v) to true },
             onRemoveRecent = if ((route == Route.HOME || route == Route.HISTORY) && v.uri.toString() in LibraryStore.recent) {
                 { menuFor = null; LibraryStore.removeRecent(listOf(v.uri.toString())) }
             } else null,
@@ -417,7 +484,14 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                 val list = sorted(visible.filter { it.folder == f })
                 if (list.isNotEmpty()) onOpen(list, 0)
             },
+            onShuffle = {
+                folderMenuFor = null
+                val list = visible.filter { it.folder == f }.shuffled()
+                if (list.isNotEmpty()) onOpen(list, 0)
+            },
             onHide = { folderMenuFor = null; LibraryStore.setFolderHidden(f, true) },
+            onCopy = { folderMenuFor = null; fileOpFor = visible.filter { it.folder == f } to false },
+            onMove = { folderMenuFor = null; fileOpFor = visible.filter { it.folder == f } to true },
         )
     }
     playlistMenuFor?.let { p ->
@@ -474,6 +548,26 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             },
         )
     }
+    fileOpFor?.let { (list, move) ->
+        val single = list.map { it.path }.distinct().singleOrNull()
+        DestinationPicker(
+            title = (if (move) "Move " else "Copy ") + (if (list.size == 1) "to…" else "${list.size} videos to…"),
+            destinations = destinations,
+            exclude = if (move) single else null,
+            onDismiss = { fileOpFor = null },
+            onPick = { d -> fileOpFor = null; runFileOp(list, move, d) },
+            onNew = { fileOpFor = null; newFolderFor = list to move },
+        )
+    }
+    newFolderFor?.let { (list, move) ->
+        TextPrompt("New Folder", confirm = if (move) "Move" else "Copy", placeholder = "Folder name (inside Movies)",
+            onDismiss = { newFolderFor = null }) { name ->
+            newFolderFor = null
+            val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+            if (clean.isNotEmpty()) runFileOp(list, move, Destination(clean, "Movies/$clean/"))
+        }
+    }
+    opProgress?.let { (label, p) -> FileOpProgress(label, p) }
     if (urlPrompt) {
         TextPrompt("Open Network Stream", confirm = "Play", placeholder = "https://… · rtsp://… · smb://…", onDismiss = { urlPrompt = false }) { url ->
             urlPrompt = false
@@ -496,7 +590,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
 @Composable
 private fun BarIcon(icon: ImageVector, desc: String, enabled: Boolean, tint: Color = Color.White, onClick: () -> Unit) {
     Box(
-        Modifier.size(52.dp).then(if (enabled) Modifier.pressable(pressedScale = 0.85f, onClick = onClick) else Modifier),
+        Modifier.size(46.dp).then(if (enabled) Modifier.pressable(pressedScale = 0.85f, onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, desc, tint = if (enabled) tint else Color(0x55FFFFFF)) }
 }

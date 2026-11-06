@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,6 +33,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.CheckCircle
@@ -168,9 +173,10 @@ fun HomeContent(
     val folders = remember(visible, sort) {
         visible.groupBy { it.folder }.toList().let { g ->
             when (sort) {
-                SortBy.NAME -> g.sortedBy { it.first.lowercase() }
+                SortBy.NAME -> g.sortedWith(compareBy(NaturalOrder) { it.first })
                 SortBy.DATE -> g.sortedByDescending { x -> x.second.maxOf { it.dateAdded } }
                 SortBy.SIZE -> g.sortedByDescending { x -> x.second.sumOf { it.size } }
+                SortBy.LENGTH -> g.sortedByDescending { x -> x.second.sumOf { it.durationMs } }
             }
         }
     }
@@ -329,28 +335,79 @@ private fun folderSubtitle(vids: List<Video>, newCount: Int): String {
         (if (total > 0) " · ${formatTime(total)}" else "") + if (newCount > 0) " · $newCount new" else ""
 }
 
-/** Folder as a cover tile: newest video's frame, name and count. */
+/** Flat folder glyph (tab + body), like classic file-manager / MX-style players. */
+@Composable
+fun FolderGlyph(modifier: Modifier, count: Int? = null, hasNew: Boolean = false) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val w = size.width; val h = size.height
+            val r = w * 0.07f
+            val tabW = w * 0.42f; val tabH = h * 0.16f; val top = h * 0.08f
+            // Back panel + tab (darker)
+            val back = androidx.compose.ui.graphics.Path().apply {
+                moveTo(0f, top + r)
+                quadraticTo(0f, top, r, top)
+                lineTo(tabW - r, top)
+                quadraticTo(tabW, top, tabW + r * 0.8f, top + tabH * 0.7f)
+                lineTo(tabW + r * 1.4f, top + tabH)
+                lineTo(w - r, top + tabH)
+                quadraticTo(w, top + tabH, w, top + tabH + r)
+                lineTo(w, h - r)
+                quadraticTo(w, h, w - r, h)
+                lineTo(r, h)
+                quadraticTo(0f, h, 0f, h - r)
+                close()
+            }
+            drawPath(back, Color(0xFFE08A00))
+            // Front body (lighter, gradient)
+            val fTop = top + tabH * 1.9f
+            drawRoundRect(
+                brush = Brush.verticalGradient(listOf(Color(0xFFFFC23D), Color(0xFFFFA415)), startY = fTop, endY = h),
+                topLeft = androidx.compose.ui.geometry.Offset(0f, fTop),
+                size = androidx.compose.ui.geometry.Size(w, h - fTop),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
+            )
+            // Little sheen line along the top of the body
+            drawRect(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(r, fTop + h * 0.02f),
+                androidx.compose.ui.geometry.Size(w - 2 * r, h * 0.025f))
+        }
+        Box(Modifier.fillMaxSize().padding(top = 0.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize(0.62f).padding(top = 10.dp), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.PlayArrow, null, tint = Color(0x8C7A4300), modifier = Modifier.fillMaxSize(0.62f))
+            }
+        }
+        if (count != null) Text(
+            "$count", style = Type.caption.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+            color = Color.White,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(5.dp)
+                .background(Color(0x66000000), RoundedCornerShape(5.dp)).padding(horizontal = 5.dp),
+        )
+        if (hasNew) NewDot(Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 2.dp))
+    }
+}
+
+/** Folder as a tile: folder icon, name and count. */
 @Composable
 private fun FolderTile(
     name: String, vids: List<Video>, marks: (Video) -> Marks, modifier: Modifier,
     onClick: () -> Unit, onLong: () -> Unit,
 ) {
-    val cover = remember(vids) { vids.maxBy { it.dateAdded } }
     val newCount = vids.count { marks(it).isNew }
-    Column(modifier.pressable(pressedScale = 0.97f, onLongClick = onLong, onClick = onClick)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 10f).clip(RoundedCornerShape(10.dp))) {
-            Thumb(cover, remember(vids) { vids.sortedByDescending { it.dateAdded }.drop(1).take(3) })
-            Text(
-                "${vids.size}", style = Type.caption, color = Color.White,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)
-                    .background(Color(0x99000000), RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
-            )
-            if (newCount > 0) NewDot(Modifier.align(Alignment.TopStart).padding(8.dp))
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(NavySurface)
+            .pressable(pressedScale = 0.97f, onLongClick = onLong, onClick = onClick).padding(12.dp),
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 10f), contentAlignment = Alignment.Center) {
+            FolderGlyph(Modifier.fillMaxHeight(0.86f).aspectRatio(1.25f), count = vids.size, hasNew = newCount > 0)
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(8.dp))
         Text(name, style = Type.subhead.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
             maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(formatSize(vids.sumOf { it.size }), style = Type.caption, color = SecondaryText)
+        Text(
+            "${vids.size} video${if (vids.size == 1) "" else "s"} · ${formatSize(vids.sumOf { it.size })}" +
+                if (newCount > 0) " · $newCount new" else "",
+            style = Type.caption, color = if (newCount > 0) Accent else SecondaryText, maxLines = 1,
+        )
     }
 }
 
@@ -359,18 +416,14 @@ private fun FolderRow(
     name: String, vids: List<Video>, marks: (Video) -> Marks, modifier: Modifier,
     onClick: () -> Unit, onLong: () -> Unit, onPlay: () -> Unit,
 ) {
-    val cover = remember(vids) { vids.maxBy { it.dateAdded } }
     val newCount = vids.count { marks(it).isNew }
     Row(
         modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onLongClick = onLong, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 7.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(width = 88.dp, height = 54.dp).clip(RoundedCornerShape(8.dp))) {
-            Thumb(cover, remember(vids) { vids.sortedByDescending { it.dateAdded }.drop(1).take(3) })
-            if (newCount > 0) NewDot(Modifier.align(Alignment.TopStart).padding(6.dp))
-        }
-        Spacer(Modifier.width(14.dp))
+        FolderGlyph(Modifier.size(width = 60.dp, height = 48.dp), hasNew = newCount > 0)
+        Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(name, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(folderSubtitle(vids, newCount), style = Type.footnote, color = SecondaryText,
@@ -653,6 +706,7 @@ fun VideoMenu(
     video: Video, route: String, onDismiss: () -> Unit,
     onPlay: () -> Unit, onSelect: () -> Unit, onAddToPlaylist: () -> Unit, onPrivate: (Boolean) -> Unit,
     onRename: () -> Unit, onShare: () -> Unit, onInfo: () -> Unit, onDelete: () -> Unit,
+    onCopy: () -> Unit, onMove: () -> Unit,
     onRemoveRecent: (() -> Unit)? = null,
 ) {
     val key = video.uri.toString()
@@ -704,6 +758,10 @@ fun VideoMenu(
         CardGroup {
             SheetAction("Rename", Icons.Default.Edit, onClick = onRename)
             CardDivider()
+            SheetAction("Copy to…", Icons.Default.ContentCopy, onClick = onCopy)
+            CardDivider()
+            SheetAction("Move to…", Icons.AutoMirrored.Filled.DriveFileMove, onClick = onMove)
+            CardDivider()
             SheetAction("Share", Icons.Default.Share, onClick = onShare)
             CardDivider()
             SheetAction("Info", Icons.Default.Info, onClick = onInfo)
@@ -714,12 +772,25 @@ fun VideoMenu(
 }
 
 @Composable
-fun FolderMenu(folder: String, onDismiss: () -> Unit, onPlayAll: () -> Unit, onHide: () -> Unit) {
+fun FolderMenu(
+    folder: String, onDismiss: () -> Unit, onPlayAll: () -> Unit, onShuffle: () -> Unit, onHide: () -> Unit,
+    onCopy: () -> Unit, onMove: () -> Unit,
+) {
     AppSheet(onDismiss) {
         SheetHeader(folder)
         CardGroup {
             SheetAction("Play All", Icons.Default.PlayArrow, onClick = onPlayAll)
             CardDivider()
+            SheetAction("Shuffle Play", Icons.Default.Shuffle, onClick = onShuffle)
+        }
+        Spacer(Modifier.height(16.dp))
+        CardGroup {
+            SheetAction("Copy All to…", Icons.Default.ContentCopy, onClick = onCopy)
+            CardDivider()
+            SheetAction("Move All to…", Icons.AutoMirrored.Filled.DriveFileMove, onClick = onMove)
+        }
+        Spacer(Modifier.height(16.dp))
+        CardGroup {
             SheetAction("Hide Folder", Icons.Default.VisibilityOff, onClick = onHide)
         }
         Text("Hidden folders can be shown again from Library › Hidden Folders.",
@@ -811,4 +882,61 @@ fun EmptyState(title: String, message: String, action: String? = null, onAction:
             )
         }
     }
+}
+
+// ───────────────────────── Copy / move ─────────────────────────
+
+/** A destination folder: label shown, relative storage path. */
+data class Destination(val name: String, val path: String)
+
+@Composable
+fun DestinationPicker(
+    title: String, destinations: List<Destination>, exclude: String?, onDismiss: () -> Unit,
+    onPick: (Destination) -> Unit, onNew: () -> Unit,
+) {
+    AppSheet(onDismiss) {
+        SheetHeader(title)
+        CardGroup { SheetAction("New Folder…", Icons.Default.CreateNewFolder, onClick = onNew) }
+        Spacer(Modifier.height(16.dp))
+        CardGroup {
+            val list = destinations.filter { !it.path.equals(exclude, ignoreCase = true) }
+            list.forEachIndexed { i, d ->
+                if (i > 0) CardDivider(start = 64)
+                Row(
+                    Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { onPick(d) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FolderGlyph(Modifier.size(width = 36.dp, height = 29.dp))
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(d.name, style = Type.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(d.path.ifEmpty { "Storage" }, style = Type.caption, color = SecondaryText,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FileOpProgress(label: String, progress: Float) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = {},
+        containerColor = NavySurface,
+        shape = RoundedCornerShape(18.dp),
+        title = { Text(label, style = Type.headline) },
+        text = {
+            Column {
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) }, color = Accent, trackColor = NavyHigh,
+                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("${(progress * 100).toInt().coerceIn(0, 100)}%", style = Type.footnote, color = SecondaryText)
+            }
+        },
+        confirmButton = {},
+    )
 }

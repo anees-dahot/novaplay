@@ -22,6 +22,8 @@ data class Video(
     val folder: String,
     val width: Int = 0,
     val height: Int = 0,
+    /** Folder path relative to storage root, e.g. "Movies/Trips/". Empty if unknown. */
+    val path: String = "",
 ) {
     /** "4K", "1080p", "720p" or null for SD/unknown. */
     val quality: String?
@@ -54,6 +56,7 @@ object VideoRepository {
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
             MediaStore.Video.Media.WIDTH,
             MediaStore.Video.Media.HEIGHT,
+            if (Build.VERSION.SDK_INT >= 29) MediaStore.Video.Media.RELATIVE_PATH else MediaStore.Video.Media.DATA,
         )
         val result = mutableListOf<Video>()
         context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
@@ -65,6 +68,8 @@ object VideoRepository {
             val folderCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
             val wCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
             val hCol = c.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
+            val pathCol = projection.lastIndex.let { c.getColumnIndexOrThrow(projection[it]) }
+            val root = android.os.Environment.getExternalStorageDirectory().path.trimEnd('/') + "/"
             while (c.moveToNext()) {
                 val id = c.getLong(idCol)
                 result += Video(
@@ -77,6 +82,10 @@ object VideoRepository {
                     folder = c.getString(folderCol) ?: "Internal storage",
                     width = c.getInt(wCol),
                     height = c.getInt(hCol),
+                    path = c.getString(pathCol).orEmpty().let { p ->
+                        if (Build.VERSION.SDK_INT >= 29) p
+                        else p.substringBeforeLast('/', "").removePrefix(root.trimEnd('/')).trimStart('/').let { if (it.isEmpty()) it else "$it/" }
+                    },
                 )
             }
         }

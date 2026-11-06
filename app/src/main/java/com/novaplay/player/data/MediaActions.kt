@@ -56,6 +56,142 @@ object MediaActions {
         } else ActionResult.Failed("Couldn't rename: ${e.message}")
     }
 
+    /** Android 11+: one "Allow NovaPlay to modify?" dialog covering every file to move. */
+    fun requestWrite(context: Context, uris: List<Uri>): ActionResult = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) {
+            ActionResult.NeedsConfirm(MediaStore.createWriteRequest(context.contentResolver, uris).intentSender)
+        } else ActionResult.Done
+    }.getOrElse { ActionResult.Failed(it.message ?: "Not allowed") }
+
+    /** Normalise "Movies/Trips" → "Movies/Trips/". */
+    fun cleanPath(path: String) = path.trim().trim('/').replace(Regex("/+"), "/").let { if (it.isEmpty()) it else "$it/" }
+
+    private fun mime(name: String) = android.webkit.MimeTypeMap.getSingleton()
+        .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "video/*"
+
+    /** MediaStore only accepts videos under these roots; anything else goes to Downloads. */
+    private fun collectionFor(path: String): Uri = when {
+        Build.VERSION.SDK_INT >= 29 && path.startsWith("Download", ignoreCase = true) ->
+            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        Build.VERSION.SDK_INT >= 29 -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        else -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    }
+
+    /** Copies each video into [dest] (relative path). [onProgress] gets 0..1 over all bytes. */
+    suspend fun copy(
+        context: Context, videos: List<Video>, dest: String, onProgress: (Float) -> Unit = {},
+    ): ActionResult = withContext(Dispatchers.IO) {
+        val path = cleanPath(dest)
+        val total = videos.sumOf { it.size }.coerceAtLeast(1)
+        var done = 0L
+        var failed = 0
+        for (v in videos) {
+            val ok = runCatching { copyOne(context, v, path) { n -> done += n; onProgress(done.toFloat() / total) } }.isSuccess
+            if (!ok) failed++
+        }
+        when (failed) {
+            0 -> ActionResult.Done
+            videos.size -> ActionResult.Failed("Couldn't copy to $path")
+            else -> ActionResult.Failed("$failed of ${videos.size} couldn't be copied")
+        }
+    }
+
+    private fun copyOne(context: Context, v: Video, path: String, onBytes: (Long) -> Unit) {
+        val cr = context.contentResolver
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, v.name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime(v.name))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, path)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val out = cr.insert(collectionFor(path), values) ?: error("insert failed")
+            try {
+                cr.openInputStream(v.uri)!!.use { i -> cr.openOutputStream(out)!!.use { o -> pump(i, o, onBytes) } }
+                cr.update(out, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+            } catch (e: Throwable) {
+                runCatching { cr.delete(out, null, null) }
+                throw e
+            }
+        } else {
+            val dir = java.io.File(android.os.Environment.getExternalStorageDirectory(), path).apply { mkdirs() }
+            var target = java.io.File(dir, v.name)
+            var n = 1
+            while (target.exists()) target = java.io.File(dir, "${v.name.substringBeforeLast('.')} (${n++}).${v.name.substringAfterLast('.')}")
+            try {
+                cr.openInputStream(v.uri)!!.use { i -> target.outputStream().use { o -> pump(i, o, onBytes) } }
+            } catch (e: Throwable) { target.delete(); throw e }
+            android.media.MediaScannerConnection.scanFile(context, arrayOf(target.path), null, null)
+        }
+    }
+
+    private fun pump(i: java.io.InputStream, o: java.io.OutputStream, onBytes: (Long) -> Unit) {
+        val buf = ByteArray(256 * 1024)
+        while (true) {
+            val r = i.read(buf)
+            if (r < 0) break
+            o.write(buf, 0, r)
+            onBytes(r.toLong())
+        }
+    }
+
+    /**
+     * Moves videos into [dest]. Same-volume moves are instant (MediaStore just updates the path);
+     * if that is refused, falls back to copy + delete. Call after [requestWrite] was allowed.
+     * Returns the uris that changed identity (copied then deleted) so callers can forget them.
+     */
+    suspend fun move(
+        context: Context, videos: List<Video>, dest: String, onProgress: (Float) -> Unit = {},
+    ): Pair<ActionResult, List<Uri>> = withContext(Dispatchers.IO) {
+        val path = cleanPath(dest)
+        val cr = context.contentResolver
+        val replaced = mutableListOf<Uri>()
+        var failed = 0
+        val total = videos.sumOf { it.size }.coerceAtLeast(1)
+        var done = 0L
+        for (v in videos) {
+            if (v.path.equals(path, ignoreCase = true)) { done += v.size; continue }
+            val fast = runCatching {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    cr.update(v.uri, ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, path) }, null, null) > 0
+                } else legacyMove(context, v, path)
+            }
+            if (fast.exceptionOrNull() is RecoverableSecurityException && Build.VERSION.SDK_INT == 29) {
+                return@withContext ActionResult.NeedsConfirm(
+                    (fast.exceptionOrNull() as RecoverableSecurityException).userAction.actionIntent.intentSender,
+                ) to replaced
+            }
+            if (fast.getOrDefault(false)) {
+                done += v.size; onProgress(done.toFloat() / total); continue
+            }
+            val ok = runCatching {
+                copyOne(context, v, path) { n -> done += n; onProgress(done.toFloat() / total) }
+                cr.delete(v.uri, null, null)
+            }.isSuccess
+            if (ok) replaced += v.uri else failed++
+        }
+        val result = when (failed) {
+            0 -> ActionResult.Done
+            videos.size -> ActionResult.Failed("Couldn't move to $path")
+            else -> ActionResult.Failed("$failed of ${videos.size} couldn't be moved")
+        }
+        result to replaced
+    }
+
+    @Suppress("DEPRECATION")
+    private fun legacyMove(context: Context, v: Video, path: String): Boolean {
+        val cr = context.contentResolver
+        val old = cr.query(v.uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        } ?: return false
+        val dir = java.io.File(android.os.Environment.getExternalStorageDirectory(), path).apply { mkdirs() }
+        val target = java.io.File(dir, v.name)
+        if (target.exists() || !java.io.File(old).renameTo(target)) return false
+        cr.update(v.uri, ContentValues().apply { put(MediaStore.MediaColumns.DATA, target.path) }, null, null)
+        android.media.MediaScannerConnection.scanFile(context, arrayOf(old, target.path), null, null)
+        return true
+    }
+
     fun share(context: Context, uris: List<Uri>) {
         val intent = if (uris.size == 1) {
             Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
