@@ -255,7 +255,10 @@ fun HomeContent(
             }
         }
 
-        item { Header("Folders", detail = "${folders.size}") }
+        item {
+            val total = remember(visible) { formatSize(visible.sumOf { it.size }) }
+            Header("Folders", detail = if (folders.isEmpty()) "0" else "${folders.size} · ${visible.size} videos · $total")
+        }
         if (folders.isEmpty() && query.isBlank()) item {
             EmptyState("No Videos Yet", "Videos saved on this phone show up here. Pull down to scan again.")
         }

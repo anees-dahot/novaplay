@@ -539,9 +539,7 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                 IconBtn(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = c::back)
                 Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
                     Text(s.title, color = Color.White, style = Type.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (s.playlistSize > 1) {
-                        Text("${s.playlistIndex + 1} of ${s.playlistSize}", color = Dim, style = Type.caption)
-                    }
+                    Text(statusLine(s), color = Dim, style = Type.caption.copy(fontFeatureSettings = "tnum"), maxLines = 1)
                 }
                 IconBtn(Icons.Default.Audiotrack, "Audio") { onSheet(Sheet.AUDIO) }
                 IconBtn(
@@ -1193,4 +1191,26 @@ private fun BookmarksSheet(s: PlayerState, c: PlayerController, close: () -> Uni
             }
         }
     }
+}
+
+/** "2 of 6 · 3:55 PM · 80% · Ends 4:12 PM" — clock, battery and finish time, like a TV guide. */
+@Composable
+private fun statusLine(s: PlayerState): String {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
+    val battery = remember(now / 60_000) {
+        (context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager)
+            ?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+    }
+    val fmt = remember { android.text.format.DateFormat.getTimeFormat(context) }
+    val parts = mutableListOf<String>()
+    if (s.playlistSize > 1) parts += "${s.playlistIndex + 1} of ${s.playlistSize}"
+    parts += fmt.format(java.util.Date(now))
+    if (battery != null) parts += "$battery%"
+    if (s.length > 0) {
+        val left = ((s.length - s.time).coerceAtLeast(0) / s.rate.coerceAtLeast(0.1f)).toLong()
+        parts += "Ends " + fmt.format(java.util.Date(System.currentTimeMillis() + left))
+    }
+    return parts.joinToString(" · ")
 }

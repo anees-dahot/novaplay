@@ -207,6 +207,7 @@ object MediaActions {
         val rows = mutableListOf(
             "Name" to video.name,
             "Folder" to video.folder,
+            "Location" to (video.path.ifEmpty { "—" }),
             "Size" to formatSize(video.size),
             "Duration" to formatTime(video.durationMs),
         )
