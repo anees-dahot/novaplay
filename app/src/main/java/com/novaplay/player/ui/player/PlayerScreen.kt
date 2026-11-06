@@ -65,6 +65,10 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -867,129 +871,135 @@ private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect:
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit, openOnline: () -> Unit) {
     SheetTitle("Subtitles")
-    if (s.spuTracks.isNotEmpty()) {
-        Group {
-            s.spuTracks.forEachIndexed { i, t ->
-                Row(
-                    Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.selectSpu(t.id) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(t.name, style = Type.subhead, color = Color.White, modifier = Modifier.weight(1f))
-                    if (t.id == s.spuTrack) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(18.dp))
-                }
-                if (i < s.spuTracks.lastIndex) GroupDivider()
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        s.spuTracks.forEach { t ->
+            Pill(if (t.id < 0) "Off" else trackLabel(t.name), t.id == s.spuTrack) { c.selectSpu(t.id) }
+        }
+        ActionPill(Icons.Default.Search, "Search online") { openOnline() }
+        ActionPill(Icons.Default.FolderOpen, "Load file") { c.pickSubtitleFile(); close() }
+    }
+
+    Spacer(Modifier.height(12.dp))
+    LabeledRow("Delay") {
+        MiniStepper("${s.spuDelayMs} ms", onMinus = { c.shiftSpuDelay(-250) }, onPlus = { c.shiftSpuDelay(250) })
+    }
+    LabeledRow("Size") { Box(Modifier.weight(1f)) { Segmented(SUB_SCALES.map { it to "$it%" }, s.subScale) { c.setSubScale(it) } } }
+    LabeledRow("Style") {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            SUB_COLORS.forEachIndexed { i, (name, rgb) ->
+                Box(
+                    Modifier.size(26.dp).clip(CircleShape).background(Color(0xFF000000 or rgb.toLong()))
+                        .border(if (i == s.subColor) 2.dp else 0.5.dp, if (i == s.subColor) Accent else Color(0x33FFFFFF), CircleShape)
+                        .pressable(pressedScale = 0.9f) { c.setSubStyle(i, s.subBackground, s.subBold) },
+                ) { if (i == s.subColor) Icon(Icons.Default.Check, name, tint = Color.Black, modifier = Modifier.align(Alignment.Center).size(14.dp)) }
             }
-        }
-        Spacer(Modifier.height(10.dp))
-    }
-    Group {
-        ActionRow("Search Online…") { openOnline() }
-        GroupDivider()
-        ActionRow("Load Subtitle File…") { c.pickSubtitleFile(); close() }
-    }
-
-    Spacer(Modifier.height(12.dp))
-    Text("DELAY", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Group {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("−", style = Type.title, color = Accent,
-                modifier = Modifier.pressable { c.shiftSpuDelay(-250) }.padding(horizontal = 16.dp, vertical = 6.dp))
-            Text("${s.spuDelayMs} ms", style = Type.body.copy(fontFeatureSettings = "tnum"), color = Color.White,
-                modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-            Text("+", style = Type.title, color = Accent,
-                modifier = Modifier.pressable { c.shiftSpuDelay(250) }.padding(horizontal = 16.dp, vertical = 6.dp))
+            Spacer(Modifier.width(4.dp))
+            Pill("Box", s.subBackground) { c.setSubStyle(s.subColor, !s.subBackground, s.subBold) }
+            Pill("Bold", s.subBold) { c.setSubStyle(s.subColor, s.subBackground, !s.subBold) }
         }
     }
-
-    Spacer(Modifier.height(12.dp))
-    Text("SIZE", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Segmented(SUB_SCALES.map { it to "$it%" }, s.subScale) { c.setSubScale(it) }
-
-    Spacer(Modifier.height(12.dp))
-    Text("STYLE", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        SUB_COLORS.forEachIndexed { i, (name, rgb) ->
-            Box(
-                Modifier.size(34.dp).clip(CircleShape).background(Color(0xFF000000 or rgb.toLong()))
-                    .border(if (i == s.subColor) 2.5.dp else 0.5.dp, if (i == s.subColor) Accent else Color(0x33FFFFFF), CircleShape)
-                    .pressable(pressedScale = 0.9f) { c.setSubStyle(i, s.subBackground, s.subBold) },
-            ) { if (i == s.subColor) Icon(Icons.Default.Check, name, tint = Color.Black, modifier = Modifier.align(Alignment.Center).size(18.dp)) }
-        }
-    }
-    Spacer(Modifier.height(12.dp))
-    Group {
-        ToggleRow("Background Box", s.subBackground) { c.setSubStyle(s.subColor, it, s.subBold) }
-        GroupDivider()
-        ToggleRow("Bold", s.subBold) { c.setSubStyle(s.subColor, s.subBackground, it) }
-    }
-    Text(
-        "Subtitles you load are remembered for that video.",
-        style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
-    )
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun AudioSheet(s: PlayerState, c: PlayerController) {
     SheetTitle("Audio")
     if (s.audioTracks.isNotEmpty()) {
-        Group {
-            s.audioTracks.forEachIndexed { i, t ->
-                Row(
-                    Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.selectAudio(t.id) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(t.name, style = Type.subhead, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    if (t.id == s.audioTrack) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(18.dp))
-                }
-                if (i < s.audioTracks.lastIndex) GroupDivider()
-            }
+        FlowRow(
+            Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            s.audioTracks.forEach { t -> Pill(if (t.id < 0) "Off" else trackLabel(t.name), t.id == s.audioTrack) { c.selectAudio(t.id) } }
         }
     }
-
-    Spacer(Modifier.height(12.dp))
-    Text("VOLUME BOOST", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Segmented(listOf(100 to "Off", 125 to "125%", 150 to "150%", 200 to "200%"), s.volumeBoost) { c.setVolumeBoost(it) }
-
-    Spacer(Modifier.height(12.dp))
-    Text("BASS BOOST", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Segmented(listOf(0 to "Off", 4 to "Low", 8 to "Medium", 12 to "High"), s.bassDb) { c.setBass(it) }
-
-    Spacer(Modifier.height(12.dp))
-    Text("DELAY", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Stepper("${s.audioDelayMs} ms", onMinus = { c.shiftAudioDelay(-50) }, onPlus = { c.shiftAudioDelay(50) })
-
-    Spacer(Modifier.height(12.dp))
-    Text("EQUALIZER", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 16.dp, bottom = 6.dp))
-    Group {
-        (listOf(-1 to "Off") + s.eqPresets.mapIndexed { i, n -> i to n }).forEachIndexed { i, (value, label) ->
-            Row(
-                Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.setEqPreset(value) }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(label, style = Type.body, color = Color.White, modifier = Modifier.weight(1f))
-                if (value == s.eqPreset) Icon(Icons.Default.Check, null, tint = Accent, modifier = Modifier.size(18.dp))
-            }
-            if (i < s.eqPresets.size) GroupDivider()
+    LabeledRow("Boost") {
+        Box(Modifier.weight(1f)) { Segmented(listOf(100 to "Off", 125 to "125%", 150 to "150%", 200 to "200%"), s.volumeBoost) { c.setVolumeBoost(it) } }
+    }
+    LabeledRow("Bass") {
+        Box(Modifier.weight(1f)) { Segmented(listOf(0 to "Off", 4 to "Low", 8 to "Med", 12 to "High"), s.bassDb) { c.setBass(it) } }
+    }
+    LabeledRow("Delay") {
+        MiniStepper("${s.audioDelayMs} ms", onMinus = { c.shiftAudioDelay(-50) }, onPlus = { c.shiftAudioDelay(50) })
+    }
+    Text("EQUALIZER", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 6.dp))
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        (listOf(-1 to "Off") + s.eqPresets.mapIndexed { i, n -> i to n }).forEach { (value, label) ->
+            Pill(label, value == s.eqPreset) { c.setEqPreset(value) }
         }
     }
 }
 
+/** libVLC names like "Track 1 - [English]" → "English"; "Track 1 - [12345]" → "Track 1". */
+private fun trackLabel(name: String): String {
+    val inner = Regex("\\[(.+)]").find(name)?.groupValues?.get(1)
+    return when {
+        inner != null && inner.any { it.isLetter() } -> inner
+        else -> name.substringBefore(" - [").ifBlank { name }
+    }
+}
+
+/** Caption on the left, control on the right — one line per setting. */
 @Composable
-private fun Stepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit) {
-    Group {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("−", style = Type.title, color = Accent,
-                modifier = Modifier.pressable(onClick = onMinus).padding(horizontal = 16.dp, vertical = 6.dp))
-            Text(label, style = Type.body.copy(fontFeatureSettings = "tnum"), color = Color.White,
-                modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-            Text("+", style = Type.title, color = Accent,
-                modifier = Modifier.pressable(onClick = onPlus).padding(horizontal = 16.dp, vertical = 6.dp))
+private fun LabeledRow(label: String, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = Type.footnote, color = Secondary, modifier = Modifier.width(56.dp).padding(start = 4.dp))
+        content()
+    }
+}
+
+/** Small selectable pill. */
+@Composable
+private fun Pill(label: String, on: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(50)).background(if (on) Accent else NavyHigh)
+            .pressable(pressedScale = 0.94f, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, style = Type.footnote, color = if (on) Color.White else Dim, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+}
+
+/** Outlined pill with an icon, for actions (not choices). */
+@Composable
+private fun ActionPill(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).border(1.dp, Accent.copy(alpha = 0.5f), RoundedCornerShape(50))
+            .pressable(pressedScale = 0.94f, onClick = onClick)
+            .padding(start = 10.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Accent, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(label, style = Type.footnote, color = Accent)
+    }
+}
+
+/** Compact − value + control. */
+@Composable
+private fun MiniStepper(label: String, onMinus: () -> Unit, onPlus: () -> Unit) {
+    Row(
+        Modifier.height(32.dp).clip(RoundedCornerShape(50)).background(NavyHigh),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp, 32.dp).pressable(pressedScale = 0.85f, onClick = onMinus), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Remove, "Less", tint = Accent, modifier = Modifier.size(16.dp))
+        }
+        Text(label, style = Type.footnote.copy(fontFeatureSettings = "tnum"), color = Color.White,
+            modifier = Modifier.width(70.dp), textAlign = TextAlign.Center)
+        Box(Modifier.size(40.dp, 32.dp).pressable(pressedScale = 0.85f, onClick = onPlus), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Add, "More", tint = Accent, modifier = Modifier.size(16.dp))
         }
     }
 }
