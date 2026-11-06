@@ -58,6 +58,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.novaplay.player.subs.OnlineSub
 import com.novaplay.player.subs.OpenSubtitles
+import com.novaplay.player.subs.FreeSubtitles
 import org.videolan.libvlc.RendererItem
 import android.net.wifi.WifiManager
 import org.videolan.libvlc.interfaces.IMedia
@@ -763,7 +764,16 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 // Exact matches come from the file hash; the title search catches the rest.
                 val hash = if (uri.scheme == "content" || uri.scheme == "file")
                     withContext(Dispatchers.IO) { OpenSubtitles.hash(this@PlayerActivity, uri) } else null
-                OpenSubtitles.search(query, hash)
+                val size = if (hash != null) withContext(Dispatchers.IO) {
+                    runCatching { contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } }.getOrNull()
+                } else null
+                // Keyless search always; the official API joins in when a key is configured.
+                val free = runCatching { FreeSubtitles.search(query, hash, size) }
+                val official = if (OpenSubtitles.enabled) runCatching { OpenSubtitles.search(query, hash) } else null
+                if (free.isFailure && (official == null || official.isFailure)) throw (free.exceptionOrNull()!!)
+                (official?.getOrNull().orEmpty() + free.getOrNull().orEmpty())
+                    .distinctBy { it.name.lowercase() + it.language }
+                    .sortedWith(compareByDescending<OnlineSub> { it.exact }.thenByDescending { it.downloads })
             }.onSuccess {
                 state.onlineSubs = it
             }.onFailure {

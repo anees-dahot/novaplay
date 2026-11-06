@@ -22,6 +22,8 @@ data class OnlineSub(
     val downloads: Int,
     /** True when the subtitle was made for this exact file (hash match). */
     val exact: Boolean,
+    /** Direct .gz link for keyless subtitles; null means "use the OpenSubtitles.com API". */
+    val directLink: String? = null,
 )
 
 /** OpenSubtitles.com REST API: search by file hash + title, download as .srt. */
@@ -76,6 +78,7 @@ object OpenSubtitles {
 
     /** Downloads [sub] into [dir] and returns the file. */
     suspend fun download(sub: OnlineSub, dir: File): File = withContext(Dispatchers.IO) {
+        if (sub.directLink != null) return@withContext FreeSubtitles.download(sub, dir)
         val c = conn("/download", "POST").apply {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
@@ -122,5 +125,85 @@ object OpenSubtitles {
         val junk = Regex("(?i)\\b(2160p|1080p|720p|480p|4k|uhd|hdr|x264|x265|h264|h265|hevc|web[- ]?dl|webrip|bluray|brrip|dvdrip|hdtv|aac|ac3|dts|yify|rarbg)\\b.*$")
         t = t.replace(junk, "")
         return t.replace(Regex("\\s+"), " ").trim()
+    }
+}
+
+/**
+ * Keyless source: the classic rest.opensubtitles.org search (no account or API key).
+ * Same subtitle library, served as gzip files.
+ */
+object FreeSubtitles {
+    private const val BASE = "https://rest.opensubtitles.org/search"
+    private const val UA = "TemporaryUserAgent"
+
+    // OpenSubtitles uses ISO 639-2/B codes; Java gives 639-2/T for a few.
+    private val bCodes = mapOf(
+        "fra" to "fre", "deu" to "ger", "zho" to "chi", "ces" to "cze", "nld" to "dut", "ron" to "rum",
+        "fas" to "per", "sqi" to "alb", "ell" to "gre", "hye" to "arm", "mya" to "bur", "kat" to "geo",
+        "isl" to "ice", "mkd" to "mac", "msa" to "may", "slk" to "slo", "eus" to "baq", "cym" to "wel",
+    )
+
+    fun languages(): String = listOf(
+        runCatching { Locale.getDefault().isO3Language }.getOrDefault("eng").let { bCodes[it] ?: it }, "eng",
+    ).filter { it.length == 3 }.distinct().joinToString(",")
+
+    private fun get(path: String): org.json.JSONArray {
+        val c = (URL(BASE + path).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000; readTimeout = 20_000
+            setRequestProperty("User-Agent", UA)
+            setRequestProperty("X-User-Agent", UA)
+        }
+        val text = c.inputStream.bufferedReader().use { it.readText() }
+        return runCatching { org.json.JSONArray(text) }.getOrDefault(org.json.JSONArray())
+    }
+
+    suspend fun search(query: String, hash: String?, size: Long?): List<OnlineSub> = withContext(Dispatchers.IO) {
+        val lang = "sublanguageid-" + languages()
+        val results = mutableListOf<OnlineSub>()
+        var lastError: Throwable? = null
+        if (hash != null && size != null && size > 0) {
+            runCatching { results += parse(get("/moviebytesize-$size/moviehash-$hash/$lang")) }.onFailure { lastError = it }
+        }
+        if (query.isNotBlank()) {
+            val q = URLEncoder.encode(query.lowercase(), "UTF-8").replace("+", "%20")
+            runCatching { results += parse(get("/query-$q/$lang")) }.onFailure { lastError = it }
+        }
+        if (results.isEmpty() && lastError != null) throw IllegalStateException("Subtitle search failed — check your connection")
+        results.distinctBy { it.fileId }
+            .sortedWith(compareByDescending<OnlineSub> { it.exact }.thenByDescending { it.downloads })
+    }
+
+    private fun parse(arr: org.json.JSONArray): List<OnlineSub> = List(arr.length()) { i ->
+        val o = arr.optJSONObject(i) ?: return@List null
+        val link = o.optString("SubDownloadLink").takeIf { it.startsWith("http") } ?: return@List null
+        if (o.optString("SubFormat", "srt").lowercase() !in setOf("srt", "ass", "ssa", "vtt", "sub")) return@List null
+        OnlineSub(
+            fileId = o.optString("IDSubtitleFile").toLongOrNull() ?: return@List null,
+            name = o.optString("MovieReleaseName").ifBlank { o.optString("SubFileName", "Subtitle") }.trim(),
+            language = o.optString("ISO639").ifBlank { o.optString("SubLanguageID") },
+            downloads = o.optString("SubDownloadsCnt").toIntOrNull() ?: 0,
+            exact = o.optString("MatchedBy") == "moviehash",
+            directLink = link,
+        )
+    }.filterNotNull()
+
+    suspend fun download(sub: OnlineSub, dir: File): File = withContext(Dispatchers.IO) {
+        dir.mkdirs()
+        val out = File(dir, "os_${sub.fileId}.srt")
+        val c = (URL(sub.directLink).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000; readTimeout = 20_000
+            setRequestProperty("User-Agent", UA)
+        }
+        c.inputStream.use { raw ->
+            java.io.BufferedInputStream(raw).use { input ->
+                input.mark(2)
+                val gz = input.read() == 0x1f && input.read() == 0x8b
+                input.reset()
+                val src = if (gz) java.util.zip.GZIPInputStream(input) else input
+                out.outputStream().use { src.copyTo(it) }
+            }
+        }
+        if (out.length() == 0L) { out.delete(); error("Empty subtitle file") }
+        out
     }
 }
