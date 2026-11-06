@@ -1,7 +1,11 @@
 package com.novaplay.player.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -80,7 +84,7 @@ fun CardDivider(start: Int = 16) =
 @Composable
 fun SheetAction(text: String, icon: ImageVector? = null, color: Color = Color.White, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onClick = onClick).padding(horizontal = 16.dp, vertical = 13.dp),
+        Modifier.fillMaxWidth().pressable(pressedScale = 0.98f, onClick = onClick).padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text, style = Type.body, color = color, modifier = Modifier.weight(1f))
@@ -168,4 +172,45 @@ fun PinPrompt(creating: Boolean, onDismiss: () -> Unit, onPin: (String) -> Boole
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Accent) } },
     )
+}
+
+/** One action in a [TileGrid]. */
+data class Tile(
+    val icon: ImageVector,
+    val label: String,
+    val active: Boolean = false,
+    val tint: Color? = null,
+    val onClick: () -> Unit,
+)
+
+/** Compact grid of round icon buttons with small labels, four per row. */
+@Composable
+fun TileGrid(tiles: List<Tile>, perRow: Int = 4) {
+    Column(Modifier.fillMaxWidth()) {
+        tiles.chunked(perRow).forEach { row ->
+            Row(Modifier.fillMaxWidth()) {
+                row.forEach { t -> ActionTile(t, Modifier.weight(1f)) }
+                repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionTile(t: Tile, modifier: Modifier) {
+    val color = t.tint ?: if (t.active) Accent else Color.White
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).pressable(pressedScale = 0.92f, onClick = t.onClick)
+            .padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape)
+                .background(if (t.active) Accent.copy(alpha = 0.2f) else if (t.tint != null) t.tint.copy(alpha = 0.14f) else NavyHigh),
+            contentAlignment = Alignment.Center,
+        ) { Icon(t.icon, null, tint = color, modifier = Modifier.size(20.dp)) }
+        Spacer(Modifier.height(5.dp))
+        Text(t.label, style = Type.caption, color = if (t.tint != null || t.active) color else Color(0xCCFFFFFF),
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 2.dp))
+    }
 }

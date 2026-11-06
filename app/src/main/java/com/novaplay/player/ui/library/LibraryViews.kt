@@ -98,6 +98,8 @@ import com.novaplay.player.ui.Motion
 import com.novaplay.player.ui.SecondaryText
 import com.novaplay.player.ui.SheetAction
 import com.novaplay.player.ui.SheetHeader
+import com.novaplay.player.ui.Tile
+import com.novaplay.player.ui.TileGrid
 import com.novaplay.player.ui.Type
 import com.novaplay.player.ui.pressable
 import java.text.DateFormat
@@ -724,7 +726,7 @@ fun VideoMenu(
     val watched = remember(v) { key in LibraryStore.watched }
     val isPrivate = remember(v) { key in LibraryStore.privateVideos }
     AppSheet(onDismiss) {
-        Row(Modifier.padding(start = 4.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(start = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(width = 96.dp, height = 54.dp).clip(RoundedCornerShape(8.dp))) { Thumb(video) }
             Spacer(Modifier.width(12.dp))
             Column {
@@ -732,51 +734,36 @@ fun VideoMenu(
                 Text("${formatTime(video.durationMs)} · ${formatSize(video.size)}", style = Type.footnote, color = SecondaryText)
             }
         }
-        CardGroup {
-            SheetAction("Play", Icons.Default.PlayArrow, onClick = onPlay)
-            CardDivider()
-            SheetAction("Select", Icons.Default.CheckCircle, onClick = onSelect)
-            if (onRemoveRecent != null) {
-                CardDivider()
-                SheetAction("Remove from Continue watching", Icons.Default.Close, onClick = onRemoveRecent)
-            }
-        }
-        Spacer(Modifier.height(16.dp))
-        CardGroup {
-            SheetAction(if (fav) "Remove from Favourites" else "Favourite", if (fav) Icons.Default.Favorite else Icons.Default.FavoriteBorder) {
+        TileGrid(buildList {
+            add(Tile(Icons.Default.PlayArrow, "Play", onClick = onPlay))
+            add(Tile(if (fav) Icons.Default.Favorite else Icons.Default.FavoriteBorder, "Favourite", active = fav) {
                 LibraryStore.setFavourite(listOf(key), !fav); onDismiss()
-            }
-            CardDivider()
-            SheetAction("Add to Playlist…", Icons.AutoMirrored.Filled.PlaylistAdd, onClick = onAddToPlaylist)
-            if (route.startsWith("playlist:")) {
-                CardDivider()
-                SheetAction("Remove from Playlist", Icons.Default.Close) {
+            })
+            add(Tile(Icons.AutoMirrored.Filled.PlaylistAdd, "Playlist", onClick = onAddToPlaylist))
+            add(Tile(Icons.Default.CheckCircle, "Select", onClick = onSelect))
+            add(Tile(Icons.Default.ContentCopy, "Copy", onClick = onCopy))
+            add(Tile(Icons.AutoMirrored.Filled.DriveFileMove, "Move", onClick = onMove))
+            add(Tile(Icons.Default.Edit, "Rename", onClick = onRename))
+            add(Tile(Icons.Default.Share, "Share", onClick = onShare))
+            add(Tile(Icons.Default.TaskAlt, if (watched) "Unwatch" else "Watched", active = watched) {
+                LibraryStore.setWatched(listOf(key), !watched); onDismiss()
+            })
+            add(Tile(if (isPrivate) Icons.Default.LockOpen else Icons.Default.Lock, if (isPrivate) "Unlock" else "Private", active = isPrivate) {
+                onPrivate(!isPrivate)
+            })
+            add(Tile(Icons.Default.Info, "Info", onClick = onInfo))
+            add(Tile(Icons.Default.Delete, "Delete", tint = Destructive, onClick = onDelete))
+        })
+        if (route.startsWith("playlist:") || onRemoveRecent != null) {
+            Spacer(Modifier.height(8.dp))
+            CardGroup {
+                if (route.startsWith("playlist:")) SheetAction("Remove from Playlist", Icons.Default.Close) {
                     LibraryStore.removeFromPlaylist(route.substringAfter(':'), listOf(key)); onDismiss()
                 }
-            }
-            CardDivider()
-            SheetAction(if (watched) "Mark as Unwatched" else "Mark as Watched", Icons.Default.TaskAlt) {
-                LibraryStore.setWatched(listOf(key), !watched); onDismiss()
-            }
-            CardDivider()
-            SheetAction(if (isPrivate) "Remove from Private" else "Move to Private", if (isPrivate) Icons.Default.LockOpen else Icons.Default.Lock) {
-                onPrivate(!isPrivate)
+                if (route.startsWith("playlist:") && onRemoveRecent != null) CardDivider()
+                if (onRemoveRecent != null) SheetAction("Remove from Continue watching", Icons.Default.Close, onClick = onRemoveRecent)
             }
         }
-        Spacer(Modifier.height(16.dp))
-        CardGroup {
-            SheetAction("Rename", Icons.Default.Edit, onClick = onRename)
-            CardDivider()
-            SheetAction("Copy to…", Icons.Default.ContentCopy, onClick = onCopy)
-            CardDivider()
-            SheetAction("Move to…", Icons.AutoMirrored.Filled.DriveFileMove, onClick = onMove)
-            CardDivider()
-            SheetAction("Share", Icons.Default.Share, onClick = onShare)
-            CardDivider()
-            SheetAction("Info", Icons.Default.Info, onClick = onInfo)
-        }
-        Spacer(Modifier.height(16.dp))
-        CardGroup { SheetAction("Delete", Icons.Default.Delete, Destructive, onDelete) }
     }
 }
 
@@ -787,25 +774,16 @@ fun FolderMenu(
 ) {
     AppSheet(onDismiss) {
         SheetHeader(folder)
-        CardGroup {
-            SheetAction("Play All", Icons.Default.PlayArrow, onClick = onPlayAll)
-            CardDivider()
-            SheetAction("Shuffle Play", Icons.Default.Shuffle, onClick = onShuffle)
-        }
-        Spacer(Modifier.height(16.dp))
-        CardGroup {
-            SheetAction("Rename Folder", Icons.Default.Edit, onClick = onRename)
-            CardDivider()
-            SheetAction("Copy All to…", Icons.Default.ContentCopy, onClick = onCopy)
-            CardDivider()
-            SheetAction("Move All to…", Icons.AutoMirrored.Filled.DriveFileMove, onClick = onMove)
-        }
-        Spacer(Modifier.height(16.dp))
-        CardGroup {
-            SheetAction("Hide Folder", Icons.Default.VisibilityOff, onClick = onHide)
-        }
-        Text("Hidden folders can be shown again from Library › Hidden Folders.",
-            style = Type.footnote, color = SecondaryText, modifier = Modifier.padding(16.dp, 6.dp))
+        TileGrid(listOf(
+            Tile(Icons.Default.PlayArrow, "Play all", onClick = onPlayAll),
+            Tile(Icons.Default.Shuffle, "Shuffle", onClick = onShuffle),
+            Tile(Icons.Default.Edit, "Rename", onClick = onRename),
+            Tile(Icons.Default.VisibilityOff, "Hide", onClick = onHide),
+            Tile(Icons.Default.ContentCopy, "Copy all", onClick = onCopy),
+            Tile(Icons.AutoMirrored.Filled.DriveFileMove, "Move all", onClick = onMove),
+        ))
+        Text("Hidden folders come back from Library › Hidden Folders.",
+            style = Type.caption, color = SecondaryText, modifier = Modifier.padding(8.dp, 6.dp))
     }
 }
 
@@ -813,9 +791,10 @@ fun FolderMenu(
 fun PlaylistMenu(name: String, onDismiss: () -> Unit, onPlay: () -> Unit, onDelete: () -> Unit) {
     AppSheet(onDismiss) {
         SheetHeader(name)
-        CardGroup { SheetAction("Play", Icons.Default.PlayArrow, onClick = onPlay) }
-        Spacer(Modifier.height(16.dp))
-        CardGroup { SheetAction("Delete Playlist", Icons.Default.Delete, Destructive, onDelete) }
+        TileGrid(listOf(
+            Tile(Icons.Default.PlayArrow, "Play", onClick = onPlay),
+            Tile(Icons.Default.Delete, "Delete", tint = Destructive, onClick = onDelete),
+        ))
     }
 }
 
