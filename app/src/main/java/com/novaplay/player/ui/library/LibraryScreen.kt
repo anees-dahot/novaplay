@@ -178,6 +178,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     // Copy / move: picker target (videos, isMove), new-folder prompt, running progress.
     var fileOpFor by remember { mutableStateOf<Pair<List<Video>, Boolean>?>(null) }
     var newFolderFor by remember { mutableStateOf<Pair<List<Video>, Boolean>?>(null) }
+    var renameFolderFor by remember { mutableStateOf<String?>(null) }
     var opProgress by remember { mutableStateOf<Pair<String, Float>?>(null) }
 
     // Pending work that waits for Android's own "Allow?" dialog.
@@ -226,6 +227,33 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
         }
         if (move) handle(MediaActions.requestWrite(context, list.map { it.uri })) { go() } else go()
     }
+    /** Renames a folder by moving its videos into a sibling folder with the new name. */
+    fun renameFolder(old: String, newName: String) {
+        val list = all.orEmpty().filter { it.folder == old && it.path.isNotEmpty() }
+        if (list.isEmpty()) return
+        fun go() {
+            scope.launch {
+                opProgress = "Renaming…" to 0f
+                var failed: ActionResult? = null
+                val groups = list.groupBy { it.path }
+                groups.entries.forEachIndexed { gi, (path, vids) ->
+                    val parent = path.trimEnd('/').substringBeforeLast('/', "")
+                    val dest = if (parent.isEmpty()) "$newName/" else "$parent/$newName/"
+                    val (r, replaced) = MediaActions.move(context, vids, dest) { p -> opProgress = "Renaming…" to (gi + p) / groups.size }
+                    if (replaced.isNotEmpty()) LibraryStore.forget(replaced.map { it.toString() })
+                    if (r !is ActionResult.Done) failed = r
+                }
+                opProgress = null
+                if (old in LibraryStore.hiddenFolders) { LibraryStore.setFolderHidden(old, false); LibraryStore.setFolderHidden(newName, true) }
+                refreshTick++
+                when (val f = failed) {
+                    null -> Toast.makeText(context, "Renamed to $newName", Toast.LENGTH_SHORT).show()
+                    else -> handle(f) { go() }
+                }
+            }
+        }
+        handle(MediaActions.requestWrite(context, list.map { it.uri })) { go() }
+    }
     fun openPrivate() {
         if (LibraryStore.privateUnlocked) navigate(Route.PRIVATE)
         else pinPrompt = { navigate(Route.PRIVATE) }
@@ -250,7 +278,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     }
     fun sorted(list: List<Video>) = when (sort) {
         SortBy.NAME -> list.sortedWith(compareBy(NaturalOrder) { it.name })
-        SortBy.DATE -> list.sortedByDescending { it.dateAdded }
+        SortBy.DATE -> list.sortedWith(compareByDescending<Video> { it.dateAdded }.thenBy(NaturalOrder) { it.name })
         SortBy.SIZE -> list.sortedByDescending { it.size }
         SortBy.LENGTH -> list.sortedByDescending { it.durationMs }
     }
@@ -490,6 +518,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                 if (list.isNotEmpty()) onOpen(list, 0)
             },
             onHide = { folderMenuFor = null; LibraryStore.setFolderHidden(f, true) },
+            onRename = { folderMenuFor = null; renameFolderFor = f },
             onCopy = { folderMenuFor = null; fileOpFor = visible.filter { it.folder == f } to false },
             onMove = { folderMenuFor = null; fileOpFor = visible.filter { it.folder == f } to true },
         )
@@ -565,6 +594,13 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             newFolderFor = null
             val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
             if (clean.isNotEmpty()) runFileOp(list, move, Destination(clean, "Movies/$clean/"))
+        }
+    }
+    renameFolderFor?.let { f ->
+        TextPrompt("Rename Folder", initial = f, confirm = "Rename", onDismiss = { renameFolderFor = null }) { name ->
+            renameFolderFor = null
+            val clean = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+            if (clean.isNotEmpty() && clean != f) renameFolder(f, clean)
         }
     }
     opProgress?.let { (label, p) -> FileOpProgress(label, p) }

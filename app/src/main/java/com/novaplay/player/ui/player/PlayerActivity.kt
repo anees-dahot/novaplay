@@ -198,6 +198,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.hasPrev = index > 0
         state.hasNext = index < uris.lastIndex || (state.shuffle && uris.size > 1)
         state.title = videoTitle
+        state.nextTitle = if (index < uris.lastIndex && !state.shuffle) titles.getOrNull(index + 1) else null
+        state.bookmarks = loadBookmarks()
         state.playlistIndex = index
         state.playlistSize = uris.size
         libVLC = LibVLC(
@@ -300,6 +302,27 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         }
     }
 
+    private val bookmarkPrefs by lazy { getSharedPreferences("bookmarks", MODE_PRIVATE) }
+
+    private fun loadBookmarks(): List<Long> =
+        bookmarkPrefs.getString(videoUri.toString(), null).orEmpty().split(',').mapNotNull { it.toLongOrNull() }.sorted()
+
+    private fun saveBookmarks(list: List<Long>) {
+        state.bookmarks = list.sorted()
+        bookmarkPrefs.edit().apply {
+            if (list.isEmpty()) remove(videoUri.toString()) else putString(videoUri.toString(), state.bookmarks.joinToString(","))
+        }.apply()
+    }
+
+    override fun addBookmark() {
+        val t = state.time
+        // Ignore a second tap within 2s of an existing bookmark.
+        if (state.bookmarks.none { kotlin.math.abs(it - t) < 2000 }) saveBookmarks(state.bookmarks + t)
+        state.flash("Bookmarked ${com.novaplay.player.data.formatTime(t)}")
+    }
+
+    override fun removeBookmark(ms: Long) = saveBookmarks(state.bookmarks - ms)
+
     private fun onEnded() {
         if (released) return
         resume.clear(videoUri.toString())
@@ -308,7 +331,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         when {
             state.loopMode == LoopMode.ONE -> switchTo(index, fromStart = true)
             state.shuffle && uris.size > 1 && (state.autoNext || state.loopMode == LoopMode.ALL) -> switchTo(randomIndex())
-            state.hasNext && state.autoNext -> switchTo(index + 1)
+            state.hasNext && state.autoNext && !state.upNextCancelled -> switchTo(index + 1)
             state.loopMode == LoopMode.ALL -> switchTo(if (state.hasNext) index + 1 else 0, fromStart = true)
             else -> finish()
         }
@@ -623,6 +646,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun setShuffle(enabled: Boolean) {
         state.shuffle = enabled
         settings.shuffle = enabled
+        state.nextTitle = if (index < uris.lastIndex && !enabled) titles.getOrNull(index + 1) else null
         shuffleSeen.clear()
         state.hasNext = index < uris.lastIndex || (enabled && uris.size > 1)
         state.flash(if (enabled) "Shuffle on" else "Shuffle off")

@@ -46,6 +46,13 @@ class PlayerState {
     var locked by mutableStateOf(false)
     var inPip by mutableStateOf(false)
     var rate by mutableFloatStateOf(1f)
+
+    /** Title of the video auto-play will open next, or null when there is none. */
+    var nextTitle by mutableStateOf<String?>(null)
+    /** User dismissed the "Up next" card: stop at the end of this video. */
+    var upNextCancelled by mutableStateOf(false)
+    /** Bookmarked positions (ms) for the current video, ascending. */
+    var bookmarks by mutableStateOf<List<Long>>(emptyList())
     var holdingFast by mutableStateOf(false)
     var scale by mutableStateOf(VideoScale.FIT)
 
@@ -130,6 +137,7 @@ class PlayerState {
         audioTracks = emptyList(); spuTracks = emptyList()
         audioTrack = -1; spuTrack = -1; spuDelayMs = 0
         chapters = emptyList(); abStart = -1; abEnd = -1
+        upNextCancelled = false; bookmarks = emptyList()
         zoom = 1f; panX = 0f; panY = 0f
         castingTo = null
         onlineSubs = emptyList(); onlineError = null; onlineSearched = false
@@ -186,5 +194,7 @@ interface PlayerController {
     fun adjustVolume(delta: Float): Int
     fun endGesture()
     fun toggleRotation()
+    fun addBookmark()
+    fun removeBookmark(ms: Long)
     fun back()
 }

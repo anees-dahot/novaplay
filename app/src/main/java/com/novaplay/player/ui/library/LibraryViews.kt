@@ -254,6 +254,9 @@ fun HomeContent(
         }
 
         item { Header("Folders", detail = "${folders.size}") }
+        if (folders.isEmpty() && query.isBlank()) item {
+            EmptyState("No Videos Yet", "Videos saved on this phone show up here. Pull down to scan again.")
+        }
         if (grid) {
             val rows = folders.chunked(2)
             itemsIndexed(rows, key = { _, r -> "fr:" + r.first().first }) { _, row ->
@@ -774,7 +777,7 @@ fun VideoMenu(
 @Composable
 fun FolderMenu(
     folder: String, onDismiss: () -> Unit, onPlayAll: () -> Unit, onShuffle: () -> Unit, onHide: () -> Unit,
-    onCopy: () -> Unit, onMove: () -> Unit,
+    onCopy: () -> Unit, onMove: () -> Unit, onRename: () -> Unit,
 ) {
     AppSheet(onDismiss) {
         SheetHeader(folder)
@@ -785,6 +788,8 @@ fun FolderMenu(
         }
         Spacer(Modifier.height(16.dp))
         CardGroup {
+            SheetAction("Rename Folder", Icons.Default.Edit, onClick = onRename)
+            CardDivider()
             SheetAction("Copy All to…", Icons.Default.ContentCopy, onClick = onCopy)
             CardDivider()
             SheetAction("Move All to…", Icons.AutoMirrored.Filled.DriveFileMove, onClick = onMove)

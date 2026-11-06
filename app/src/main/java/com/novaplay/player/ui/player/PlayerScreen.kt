@@ -64,6 +64,8 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.SkipNext
@@ -111,7 +113,7 @@ import com.novaplay.player.ui.pressable
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
-private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS }
+private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS, BOOKMARKS }
 private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
@@ -197,6 +199,25 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
             }
         }
 
+        // "Up next" card in the last 10 s when auto-play will open another video.
+        val remaining = s.length - s.time
+        val showUpNext = s.nextTitle != null && s.autoNext && !s.upNextCancelled && !s.locked &&
+            s.loopMode != LoopMode.ONE && s.abEnd < 0 && s.length > 30_000 && remaining in 1..10_000 && s.started
+        AnimatedVisibility(
+            visible = showUpNext,
+            enter = fadeIn(Motion.smooth()),
+            exit = fadeOut(Motion.smooth()),
+            modifier = Modifier.align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.displayCutout).padding(end = 24.dp, bottom = 120.dp),
+        ) {
+            UpNextCard(
+                title = s.nextTitle.orEmpty(),
+                seconds = ((remaining + 999) / 1000).toInt().coerceIn(1, 10),
+                onPlay = { c.playNext() },
+                onCancel = { s.upNextCancelled = true },
+            )
+        }
+
         // Brightness (left) / volume (right) level bar.
         val hud = s.hud
         AnimatedVisibility(
@@ -271,8 +292,10 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                 ) { c.seekTo(it); sheet = null }
                 Sheet.SUBTITLES -> SubtitleSheet(s, c, close = { sheet = null }, openOnline = { sheet = Sheet.ONLINE_SUBS })
                 Sheet.ONLINE_SUBS -> OnlineSubsSheet(s, c, close = { sheet = null })
+                Sheet.BOOKMARKS -> BookmarksSheet(s, c, close = { sheet = null })
                 Sheet.MORE -> MoreSheet(
                     s, c, close = { sheet = null },
+                    openBookmarks = { sheet = Sheet.BOOKMARKS },
                     openChapters = { sheet = Sheet.CHAPTERS },
                     openSleep = { sheet = Sheet.SLEEP },
                     openCast = { sheet = Sheet.CAST },
@@ -675,6 +698,10 @@ private fun Scrubber(s: PlayerState, c: PlayerController, modifier: Modifier = M
                     drawRect(Color.Black, Offset(cx - 1f, top), Size(2f, h))
                 }
             }
+            s.bookmarks.forEach { b ->
+                val bx = size.width * (b / max).coerceIn(0f, 1f)
+                drawCircle(Color(0xFFFFC23D), h * 0.9f, Offset(bx, cy))
+            }
             drawCircle(Color.White, thumb.toPx() / 2, Offset(played.coerceIn(0f, size.width), cy))
         }
     }
@@ -971,11 +998,13 @@ private fun CastSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
 @Composable
 private fun MoreSheet(
     s: PlayerState, c: PlayerController, close: () -> Unit,
-    openChapters: () -> Unit, openSleep: () -> Unit, openCast: () -> Unit,
+    openChapters: () -> Unit, openSleep: () -> Unit, openCast: () -> Unit, openBookmarks: () -> Unit,
 ) {
     SheetTitle("Options")
     Group {
         ActionRow("Take Screenshot") { close(); c.takeScreenshot() }
+        GroupDivider()
+        ActionRow(if (s.bookmarks.isEmpty()) "Bookmarks" else "Bookmarks (${s.bookmarks.size})") { openBookmarks() }
         GroupDivider()
         ActionRow(
             when {
@@ -1086,4 +1115,59 @@ private fun OnlineSubsSheet(s: PlayerState, c: PlayerController, close: () -> Un
         "Subtitles by OpenSubtitles.com",
         style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, top = 10.dp),
     )
+}
+
+@Composable
+private fun UpNextCard(title: String, seconds: Int, onPlay: () -> Unit, onCancel: () -> Unit) {
+    Row(
+        Modifier.widthIn(max = 320.dp).background(Color(0xE6161618), RoundedCornerShape(14.dp))
+            .padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f, fill = false).pressable(pressedScale = 0.97f, onClick = onPlay)) {
+            Text("Up next in $seconds", style = Type.caption, color = Accent)
+            Text(title, style = Type.subhead.copy(fontWeight = FontWeight.Medium), color = Color.White,
+                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            Modifier.size(36.dp).background(Accent, CircleShape).pressable(pressedScale = 0.88f, onClick = onPlay),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Default.PlayArrow, "Play now", tint = Color.White, modifier = Modifier.size(20.dp)) }
+        Box(
+            Modifier.size(36.dp).pressable(pressedScale = 0.88f, onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Default.Close, "Cancel", tint = Dim, modifier = Modifier.size(20.dp)) }
+    }
+}
+
+@Composable
+private fun BookmarksSheet(s: PlayerState, c: PlayerController, close: () -> Unit) {
+    SheetTitle("Bookmarks")
+    Group {
+        ActionRow("Add Bookmark at ${formatTime(s.time)}") { c.addBookmark() }
+    }
+    if (s.bookmarks.isEmpty()) {
+        Text("Bookmarks show as gold dots on the seek bar.", style = Type.footnote, color = Secondary,
+            modifier = Modifier.padding(16.dp, 10.dp))
+        return
+    }
+    Spacer(Modifier.height(16.dp))
+    Group {
+        s.bookmarks.forEachIndexed { i, b ->
+            if (i > 0) GroupDivider()
+            Row(
+                Modifier.fillMaxWidth().pressable(pressedScale = 0.98f) { c.seekTo(b); close() }
+                    .padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(formatTime(b), style = Type.body.copy(fontFeatureSettings = "tnum"), color = Color.White,
+                    modifier = Modifier.weight(1f))
+                Box(
+                    Modifier.size(44.dp).pressable(pressedScale = 0.85f) { c.removeBookmark(b) },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Default.Close, "Remove", tint = Secondary, modifier = Modifier.size(18.dp)) }
+            }
+        }
+    }
 }
