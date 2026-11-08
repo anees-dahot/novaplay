@@ -30,6 +30,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -277,7 +280,7 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
                 Modifier.background(Scrim, RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("2×", color = Color.White, style = Type.subhead.copy(fontWeight = FontWeight.SemiBold))
+                Text("${formatRate(s.holdSpeed)}×", color = Color.White, style = Type.subhead.copy(fontWeight = FontWeight.SemiBold))
                 Spacer(Modifier.width(6.dp))
                 Icon(Icons.Default.FastForward, null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
@@ -385,9 +388,9 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                 if (now - streak.at > 900 || streak.left != left) streak.total = 0
                 streak.left = left
                 streak.at = now
-                streak.total += 10
+                streak.total += s.seekStep
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                c.seekBy(if (left) -10_000 else 10_000)
+                c.seekBy(if (left) -s.seekStep * 1000L else s.seekStep * 1000L)
                 s.flash(if (left) "−${streak.total}s" else "+${streak.total}s", if (left) -1 else 1)
             }
             detectTapGestures(
@@ -444,6 +447,8 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     val event = awaitPointerEvent()
                     val pressed = event.changes.filter { it.pressed }
                     if (pressed.isEmpty()) break
+                    // While holding for fast-play, every other gesture is paused.
+                    if (s.holdingFast && mode == GestureMode.NONE) continue
 
                     if (pressed.size >= 2) {
                         val dist = (pressed[0].position - pressed[1].position).getDistance().coerceAtLeast(1f)
@@ -475,7 +480,6 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     dx += delta.x
                     dy += delta.y
                     if (mode == GestureMode.NONE && (abs(dx) > slop || abs(dy) > slop)) {
-                        if (s.holdingFast) c.stopHoldFast()
                         mode = when {
                             abs(dx) > abs(dy) -> GestureMode.SEEK.also { s.seeking = true }
                             leftSide -> GestureMode.BRIGHTNESS
@@ -651,6 +655,14 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                         style = Type.subhead.copy(fontWeight = FontWeight.SemiBold, fontFeatureSettings = "tnum"),
                         modifier = Modifier.pressable { onSheet(Sheet.SPEED) }.padding(horizontal = 12.dp, vertical = 10.dp),
                     )
+                    IconBtn(
+                        Icons.Default.Headphones, "Background play",
+                        tint = if (s.backgroundPlay) Accent else Color.White,
+                    ) {
+                        c.setBackgroundPlay(!s.backgroundPlay)
+                        s.flash(if (s.backgroundPlay) "Background play on" else "Background play off")
+                        s.bump()
+                    }
                     IconBtn(Icons.Default.AspectRatio, "Aspect ratio") { onSheet(Sheet.ASPECT) }
                     IconBtn(Icons.Default.ScreenRotation, "Rotate") { c.toggleRotation(); s.bump() }
                 }
@@ -678,16 +690,21 @@ private fun Scrubber(s: PlayerState, c: PlayerController, modifier: Modifier = M
     BoxWithConstraints(modifier.height(32.dp)) {
         // Frame preview floats above the finger.
         if (s.seeking && s.length > 0) {
-            val previewW = 160.dp
+            val previewW = 200.dp
+            // Keep the frame's own shape (portrait videos get a tall preview), within sane bounds.
+            val ratio = preview?.let { it.width.toFloat() / it.height.coerceAtLeast(1) }?.coerceIn(0.5f, 2.4f) ?: (16f / 9f)
+            val previewH = if (ratio >= 1f) previewW / ratio else 150.dp
+            val boxW = if (ratio >= 1f) previewW else previewH * ratio
             val fraction = (s.time / max).coerceIn(0f, 1f)
             val x = maxWidth * fraction - previewW / 2
             Column(
-                Modifier.offset(x = x.coerceIn(0.dp, (maxWidth - previewW).coerceAtLeast(0.dp)), y = (-118).dp)
-                    .width(previewW),
+                // requiredHeight: the scrubber row is only 32dp tall and would squash the preview into a bar.
+                Modifier.offset(x = x.coerceIn(0.dp, (maxWidth - previewW).coerceAtLeast(0.dp)), y = -(previewH + 36.dp))
+                    .requiredWidth(previewW).wrapContentHeight(unbounded = true),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Box(
-                    Modifier.size(previewW, 90.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black)
+                    Modifier.requiredSize(boxW, previewH).clip(RoundedCornerShape(8.dp)).background(Color.Black)
                         .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp)),
                 ) {
                     preview?.let { Image(it, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
@@ -1080,6 +1097,14 @@ private fun MoreSheet(
     Segmented(listOf(LoopMode.OFF to "Off", LoopMode.ONE to "This Video", LoopMode.ALL to "All"), s.loopMode) { c.setLoopMode(it) }
 
     Spacer(Modifier.height(14.dp))
+    Text("HOLD SPEED", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 4.dp, bottom = 6.dp))
+    Segmented(listOf(1.5f to "1.5×", 2f to "2×", 3f to "3×", 4f to "4×"), s.holdSpeed) { c.setHoldSpeed(it) }
+
+    Spacer(Modifier.height(14.dp))
+    Text("DOUBLE-TAP SEEK", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 4.dp, bottom = 6.dp))
+    Segmented(listOf(5 to "5s", 10 to "10s", 15 to "15s", 30 to "30s"), s.seekStep) { c.setSeekStep(it) }
+
+    Spacer(Modifier.height(14.dp))
     Text("PLAYBACK", style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 4.dp, bottom = 6.dp))
     FlowRow(
         Modifier.fillMaxWidth(),
@@ -1088,7 +1113,6 @@ private fun MoreSheet(
     ) {
         ToggleChip(Icons.Default.SkipNext, "Auto-play next", s.autoNext) { c.setAutoNext(!s.autoNext) }
         if (s.playlistSize > 1) ToggleChip(Icons.Default.Shuffle, "Shuffle", s.shuffle) { c.setShuffle(!s.shuffle) }
-        ToggleChip(Icons.Default.Headphones, "Background play", s.backgroundPlay) { c.setBackgroundPlay(!s.backgroundPlay) }
         ToggleChip(Icons.Default.NightsStay, "Night mode", s.nightMode) { c.setNightMode(!s.nightMode) }
         ToggleChip(Icons.Default.Memory, "HW decoding", s.hwDecoder) { close(); c.setHwDecoder(!s.hwDecoder) }
     }

@@ -238,7 +238,8 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                 val groups = list.groupBy { it.path }
                 groups.entries.forEachIndexed { gi, (path, vids) ->
                     val parent = path.trimEnd('/').substringBeforeLast('/', "")
-                    val dest = if (parent.isEmpty()) "$newName/" else "$parent/$newName/"
+                    // MediaStore only allows videos under standard roots; top-level folders go under Movies/.
+                    val dest = if (parent.isEmpty()) "Movies/$newName/" else "$parent/$newName/"
                     val (r, replaced) = MediaActions.move(context, vids, dest) { p -> opProgress = "Renaming…" to (gi + p) / groups.size }
                     if (replaced.isNotEmpty()) LibraryStore.forget(replaced.map { it.toString() })
                     if (r !is ActionResult.Done) failed = r

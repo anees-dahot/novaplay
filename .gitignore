@@ -5,3 +5,5 @@ local.properties
 *.iml
 .DS_Store
 dist/
+app/.cxx/Debug/
+app/.cxx/tools/debug/

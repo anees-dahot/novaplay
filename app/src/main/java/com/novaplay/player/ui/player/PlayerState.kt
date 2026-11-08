@@ -58,6 +58,8 @@ class PlayerState {
     /** Bookmarked positions (ms) for the current video, ascending. */
     var bookmarks by mutableStateOf<List<Long>>(emptyList())
     var holdingFast by mutableStateOf(false)
+    var holdSpeed by mutableFloatStateOf(2f)
+    var seekStep by mutableIntStateOf(10)
     var scale by mutableStateOf(VideoScale.FIT)
 
     var audioTracks by mutableStateOf<List<Track>>(emptyList())
@@ -157,6 +159,8 @@ interface PlayerController {
     fun setRate(rate: Float)
     fun startHoldFast()
     fun stopHoldFast()
+    fun setHoldSpeed(speed: Float)
+    fun setSeekStep(seconds: Int)
     fun setScale(scale: VideoScale)
     fun selectAudio(id: Int)
     fun selectSpu(id: Int)

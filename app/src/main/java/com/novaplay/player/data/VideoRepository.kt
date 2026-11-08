@@ -222,10 +222,19 @@ class Settings(context: Context) {
     var subColor by int("sub_color", 0)
     var eqPreset by int("eq_preset", -1)
     var bassDb by int("bass_db", 0)
+    /** Hold-to-fast speed ×100. */
+    var holdSpeed by int("hold_speed", 200)
+    /** Double-tap seek step in seconds. */
+    var seekStep by int("seek_step", 10)
 
     /** Subtitle file the user loaded for a video, reloaded next time it plays. */
     fun subtitleFor(uri: String): String? = prefs.getString("sub:$uri", null)
     fun setSubtitleFor(uri: String, path: String) = prefs.edit().putString("sub:$uri", path).apply()
+
+    /** Audio / subtitle track the user picked for a video ([kind] = "a" or "s"); null if never picked. */
+    fun trackFor(uri: String, kind: String): Int? =
+        if (prefs.contains("trk$kind:$uri")) prefs.getInt("trk$kind:$uri", -1) else null
+    fun setTrackFor(uri: String, kind: String, id: Int) = prefs.edit().putInt("trk$kind:$uri", id).apply()
 }
 
 fun formatTime(ms: Long): String {

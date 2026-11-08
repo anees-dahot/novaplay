@@ -66,6 +66,15 @@ object MediaActions {
     /** Normalise "Movies/Trips" → "Movies/Trips/". */
     fun cleanPath(path: String) = path.trim().trim('/').replace(Regex("/+"), "/").let { if (it.isEmpty()) it else "$it/" }
 
+    /** Android 10+ only lets apps place videos under these roots; anything else is moved under Movies/. */
+    private val ALLOWED_ROOTS = listOf("DCIM", "Movies", "Pictures", "Download")
+    fun storePath(dest: String): String {
+        val p = cleanPath(dest)
+        if (Build.VERSION.SDK_INT < 29 || p.isEmpty()) return p
+        val root = p.substringBefore('/')
+        return if (ALLOWED_ROOTS.any { it.equals(root, ignoreCase = true) }) p else "Movies/$p"
+    }
+
     private fun mime(name: String) = android.webkit.MimeTypeMap.getSingleton()
         .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "video/*"
 
@@ -81,7 +90,7 @@ object MediaActions {
     suspend fun copy(
         context: Context, videos: List<Video>, dest: String, onProgress: (Float) -> Unit = {},
     ): ActionResult = withContext(Dispatchers.IO) {
-        val path = cleanPath(dest)
+        val path = storePath(dest)
         val total = videos.sumOf { it.size }.coerceAtLeast(1)
         var done = 0L
         var failed = 0
@@ -143,7 +152,7 @@ object MediaActions {
     suspend fun move(
         context: Context, videos: List<Video>, dest: String, onProgress: (Float) -> Unit = {},
     ): Pair<ActionResult, List<Uri>> = withContext(Dispatchers.IO) {
-        val path = cleanPath(dest)
+        val path = storePath(dest)
         val cr = context.contentResolver
         val replaced = mutableListOf<Uri>()
         var failed = 0

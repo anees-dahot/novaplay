@@ -150,6 +150,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.subBold = settings.subBold
         state.eqPreset = settings.eqPreset
         state.bassDb = settings.bassDb
+        state.holdSpeed = settings.holdSpeed / 100f
+        state.seekStep = settings.seekStep
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -158,6 +160,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             this, pipReceiver, IntentFilter(ACTION_PIP_TOGGLE), ContextCompat.RECEIVER_NOT_EXPORTED
         )
         PlaybackService.player = this
+        ContextCompat.registerReceiver(
+            this, noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_EXPORTED
+        )
 
         createPlayer(startMs = resume.get(videoUri.toString()))
         // Equalizer presets are native calls: only valid once LibVLC has loaded its library.
@@ -196,6 +201,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     private fun createPlayer(startMs: Long) {
         released = false
+        // Fresh player (new video, loop, or restart): remembered tracks must be applied again.
+        trackRestoreFor = null
+        spuRestoreFor = null
         LibraryStore.markPlayed(videoUri.toString())
         state.hasPrev = index > 0
         state.hasNext = index < uris.lastIndex || (state.shuffle && uris.size > 1)
@@ -269,6 +277,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         when (event.type) {
             MediaPlayer.Event.Playing -> {
                 state.playing = true
+                requestAudioFocus()
                 if (player.rate != state.rate && !state.holdingFast) player.rate = state.rate
                 applyAudio()
                 pendingSeek?.let { player.time = it; pendingSeek = null }
@@ -280,6 +289,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 state.playing = false
                 onPlayStateChanged()
             }
+            MediaPlayer.Event.Vout -> autoOrient()
             MediaPlayer.Event.LengthChanged -> {
                 state.length = event.lengthChanged
                 loadChapters()
@@ -300,7 +310,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             MediaPlayer.Event.EndReached -> main.post { onEnded() }
             MediaPlayer.Event.EncounteredError -> main.post {
                 Toast.makeText(this, "Playback error", Toast.LENGTH_LONG).show()
-                if (state.hwDecoder) setHwDecoder(false) // often fixes black screen / codec issues
+                // Software decoding often fixes black screen / codec issues. Only for this session:
+                // one bad file shouldn't switch the user's saved preference.
+                if (state.hwDecoder) { state.hwDecoder = false; state.flash("Switched to software decoder"); restartSameVideo() }
                 else finish()
             }
         }
@@ -358,7 +370,47 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         PlaybackService.update(this)
     }
 
+    // Remembered track picks, applied once per video as soon as the tracks show up.
+    private var trackRestoreFor: Uri? = null
+    private var spuRestoreFor: Uri? = null
+    private var orientationFor: Uri? = null
+    private var userRotated = false
+
+    private fun restoreTracks() {
+        val key = videoUri.toString()
+        if (trackRestoreFor != videoUri) {
+            val a = player.audioTracks
+            if (!a.isNullOrEmpty()) {
+                trackRestoreFor = videoUri
+                settings.trackFor(key, "a")?.let { id -> if (a.any { it.id == id }) player.audioTrack = id }
+            }
+        }
+        if (spuRestoreFor != videoUri) {
+            val id = settings.trackFor(key, "s")
+            when {
+                id == null -> spuRestoreFor = videoUri
+                id == -1 -> { player.spuTrack = -1; spuRestoreFor = videoUri }
+                player.spuTracks?.any { it.id == id } == true -> { player.spuTrack = id; spuRestoreFor = videoUri }
+            }
+        }
+    }
+
+    /** Portrait videos open in portrait, wide ones in landscape — unless the user rotated by hand. */
+    private fun autoOrient() {
+        if (orientationFor == videoUri || userRotated) return
+        val t = player.currentVideoTrack ?: return
+        if (t.width <= 0 || t.height <= 0) return
+        orientationFor = videoUri
+        val rotated = t.orientation == org.videolan.libvlc.interfaces.IMedia.VideoTrack.Orientation.RightTop ||
+            t.orientation == org.videolan.libvlc.interfaces.IMedia.VideoTrack.Orientation.LeftBottom
+        val (w, h) = if (rotated) t.height to t.width else t.width to t.height
+        requestedOrientation = if (h > w) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
     private fun refreshTracks() {
+        restoreTracks()
+        autoOrient()
         state.audioTracks = player.audioTracks?.map { Track(it.id, it.name) } ?: emptyList()
         state.spuTracks = player.spuTracks?.map { Track(it.id, it.name) } ?: emptyList()
         state.audioTrack = player.audioTrack
@@ -437,7 +489,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (state.holdingFast || !player.isPlaying) return
         rateBeforeHold = state.rate
         state.holdingFast = true
-        player.rate = 2f
+        player.rate = state.holdSpeed
     }
 
     override fun stopHoldFast() {
@@ -460,11 +512,13 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun selectAudio(id: Int) {
         player.audioTrack = id
         state.audioTrack = id
+        settings.setTrackFor(videoUri.toString(), "a", id)
     }
 
     override fun selectSpu(id: Int) {
         player.spuTrack = id
         state.spuTrack = id
+        settings.setTrackFor(videoUri.toString(), "s", id)
     }
 
     override fun pickSubtitleFile() = subtitlePicker.launch(arrayOf("*/*"))
@@ -547,6 +601,58 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         }
     }
 
+    override fun setHoldSpeed(speed: Float) {
+        state.holdSpeed = speed
+        settings.holdSpeed = (speed * 100).toInt()
+    }
+
+    override fun setSeekStep(seconds: Int) {
+        state.seekStep = seconds
+        settings.seekStep = seconds
+    }
+
+    // Audio focus: pause for calls / other apps, resume after a short interruption.
+    private var focusRequest: android.media.AudioFocusRequest? = null
+    private var pausedByFocus = false
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        main.post {
+            if (released) return@post
+            when (change) {
+                AudioManager.AUDIOFOCUS_LOSS -> { pausedByFocus = false; if (player.isPlaying) player.pause() }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> if (player.isPlaying) { pausedByFocus = true; player.pause() }
+                AudioManager.AUDIOFOCUS_GAIN -> if (pausedByFocus) { pausedByFocus = false; player.play() }
+            }
+        }
+    }
+
+    private fun requestAudioFocus() {
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            val req = focusRequest ?: android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE).build()
+                )
+                .setOnAudioFocusChangeListener(focusListener).build().also { focusRequest = it }
+            audio.requestAudioFocus(req)
+        } else {
+            @Suppress("DEPRECATION")
+            audio.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        if (android.os.Build.VERSION.SDK_INT >= 26) focusRequest?.let { audio.abandonAudioFocusRequest(it) }
+        else @Suppress("DEPRECATION") audio.abandonAudioFocus(focusListener)
+    }
+
+    // Headphones unplugged / Bluetooth dropped → pause instead of blasting the speaker.
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            if (!released && player.isPlaying) { player.pause(); state.flash("Paused — headphones disconnected") }
+        }
+    }
+
     override fun setAutoNext(enabled: Boolean) {
         state.autoNext = enabled
         settings.autoNext = enabled
@@ -604,7 +710,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 }
                 val us = ms * 1000
                 if (Build.VERSION.SDK_INT >= 27) {
-                    r.getScaledFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)
+                    r.getScaledFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 480, 480)
                 } else {
                     r.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 }
@@ -642,6 +748,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     override fun toggleRotation() {
+        userRotated = true
         requestedOrientation =
             if (requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT) {
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -955,6 +1062,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         releasePlayer()
         closeRetriever()
         runCatching { unregisterReceiver(pipReceiver) }
+        runCatching { unregisterReceiver(noisyReceiver) }
+        abandonAudioFocus()
         if (PlaybackService.player === this) {
             PlaybackService.player = null
             PlaybackService.stop(this)
