@@ -35,6 +35,8 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -130,10 +132,9 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 private enum class Sheet { SPEED, AUDIO, SUBTITLES, ASPECT, CHAPTERS, MORE, SLEEP, CAST, ONLINE_SUBS, BOOKMARKS, QUEUE }
-private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH }
+private enum class GestureMode { NONE, SEEK, BRIGHTNESS, VOLUME, PINCH, SUB }
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f)
-private val SUB_SCALES = listOf(75, 100, 125, 150, 200)
 private val Secondary = Color(0xFF9A9AA0)
 private val Dim = Color(0xB3FFFFFF)
 private val Scrim = Color(0x80000000)
@@ -257,14 +258,27 @@ fun PlayerScreen(s: PlayerState, c: PlayerController) {
             )
         }
 
-        // Brightness (left) / volume (right) level bar.
+        // Where the subtitles will sit while they are being dragged.
+        s.subDragPos?.let { pos ->
+            Box(Modifier.fillMaxSize().graphicsLayer { translationY = -pos * size.height }) {
+                Text(
+                    "Subtitles here",
+                    color = Color.White, style = Type.headline,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp)
+                        .border(1.dp, Accent, RoundedCornerShape(8.dp))
+                        .background(Scrim, RoundedCornerShape(8.dp)).padding(horizontal = 14.dp, vertical = 6.dp),
+                )
+            }
+        }
+
+        // Brightness / volume level bar, top centre so it never covers the picture's sides.
         val hud = s.hud
         AnimatedVisibility(
             visible = hud != null,
             enter = fadeIn(Motion.snappy()),
             exit = fadeOut(Motion.smooth()),
-            modifier = Modifier.align(if (hud?.volume == true) Alignment.CenterEnd else Alignment.CenterStart)
-                .windowInsetsPadding(WindowInsets.displayCutout).padding(horizontal = 40.dp),
+            modifier = Modifier.align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.displayCutout).padding(top = 24.dp),
         ) {
             LevelBar(hud ?: Hud(false, 0f))
         }
@@ -353,9 +367,9 @@ private fun formatRate(r: Float) = if (r % 1f == 0f) r.toInt().toString() else r
 @Composable
 private fun LevelBar(hud: Hud) {
     val level = hud.level.coerceIn(0f, 1f)
-    Column(
-        Modifier.background(Scrim, RoundedCornerShape(16.dp)).padding(horizontal = 10.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Row(
+        Modifier.background(Scrim, RoundedCornerShape(50)).padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             when {
@@ -365,12 +379,12 @@ private fun LevelBar(hud: Hud) {
             },
             null, tint = Color.White, modifier = Modifier.size(18.dp),
         )
-        Spacer(Modifier.height(10.dp))
-        Box(Modifier.size(width = 4.dp, height = 120.dp).clip(CircleShape).background(TrackColor)) {
-            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(level).background(Color.White))
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.size(width = 140.dp, height = 4.dp).clip(CircleShape).background(TrackColor)) {
+            Box(Modifier.fillMaxHeight().fillMaxWidth(level).background(Color.White))
         }
-        Spacer(Modifier.height(8.dp))
-        Text("${(level * 100).toInt()}", color = Color.White, style = Tabular)
+        Spacer(Modifier.width(10.dp))
+        Text("${(level * 100).toInt()}", color = Color.White, style = Tabular, modifier = Modifier.width(28.dp))
     }
 }
 
@@ -442,6 +456,10 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                 var startDist = 0f
                 var startZoom = 1f
                 var lastCentroid = Offset.Zero
+                // A vertical drag that starts on the subtitles (the band just above their baseline) moves them.
+                val subLine = size.height * (1f - s.subPos)
+                val onSubs = s.spuTrack >= 0 && down.position.y in (subLine - size.height * 0.2f)..subLine
+                val startSubPos = s.subPos
 
                 while (true) {
                     val event = awaitPointerEvent()
@@ -481,7 +499,9 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     dy += delta.y
                     if (mode == GestureMode.NONE && (abs(dx) > slop || abs(dy) > slop)) {
                         mode = when {
-                            abs(dx) > abs(dy) -> GestureMode.SEEK.also { s.seeking = true }
+                            // Live streams have no length: a swipe would jump back to the start.
+                            abs(dx) > abs(dy) -> if (s.length > 0) GestureMode.SEEK.also { s.seeking = true } else GestureMode.NONE
+                            onSubs -> GestureMode.SUB
                             leftSide -> GestureMode.BRIGHTNESS
                             else -> GestureMode.VOLUME
                         }
@@ -503,6 +523,7 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                             s.hud = Hud(true, c.adjustVolume(-delta.y / size.height) / 100f)
                             s.gestureTick++
                         }
+                        GestureMode.SUB -> s.subDragPos = (startSubPos - dy / size.height).coerceIn(0f, 0.85f)
                         else -> Unit
                     }
                     if (mode != GestureMode.NONE) change.consume()
@@ -512,6 +533,14 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     GestureMode.SEEK -> {
                         c.seekTo(seekTarget)
                         s.seeking = false
+                    }
+                    GestureMode.SUB -> {
+                        val pos = s.subDragPos
+                        s.subDragPos = null
+                        if (pos != null && abs(pos - startSubPos) > 0.005f) {
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            c.setSubPosition(pos)
+                        }
                     }
                     GestureMode.PINCH -> {
                         // Snap back to normal when nearly unzoomed.
@@ -539,11 +568,11 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
     Box(Modifier.fillMaxSize()) {
         // Gradient scrims only where text/icons sit; the middle of the picture stays clean.
         Box(
-            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(120.dp)
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(96.dp)
                 .background(Brush.verticalGradient(listOf(Color(0xA6000000), Color.Transparent))),
         )
         Box(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(150.dp)
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(124.dp)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xBF000000)))),
         )
 
@@ -562,7 +591,7 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                     Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)
                         .then(if (s.playlistSize > 1) Modifier.pressable(pressedScale = 0.98f) { onSheet(Sheet.QUEUE) } else Modifier),
                 ) {
-                    Text(s.title, color = Color.White, style = Type.headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(s.title, color = Color.White, style = Type.subhead.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(statusLine(s), color = Dim, style = Type.caption.copy(fontFeatureSettings = "tnum"), maxLines = 1)
                 }
                 IconBtn(Icons.Default.Audiotrack, "Audio") { onSheet(Sheet.AUDIO) }
@@ -578,12 +607,12 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
             // ── Center transport: plain icons, only play/pause gets a soft backing.
             Row(
                 Modifier.align(Alignment.Center),
-                horizontalArrangement = Arrangement.spacedBy(36.dp),
+                horizontalArrangement = Arrangement.spacedBy(30.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconBtn(Icons.Default.Replay10, "Back 10 seconds", box = 56, iconSize = 34) { c.seekBy(-10_000); s.bump() }
+                IconBtn(Icons.Default.Replay10, "Back 10 seconds", box = 46, iconSize = 28) { c.seekBy(-10_000); s.bump() }
                 Box(
-                    Modifier.size(72.dp).background(Scrim, CircleShape)
+                    Modifier.size(56.dp).background(Scrim, CircleShape)
                         .pressable(pressedScale = 0.9f, onClick = c::togglePlay),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -598,11 +627,11 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                         Icon(
                             if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                             if (playing) "Pause" else "Play",
-                            tint = Color.White, modifier = Modifier.size(44.dp),
+                            tint = Color.White, modifier = Modifier.size(34.dp),
                         )
                     }
                 }
-                IconBtn(Icons.Default.Forward10, "Forward 10 seconds", box = 56, iconSize = 34) { c.seekBy(10_000); s.bump() }
+                IconBtn(Icons.Default.Forward10, "Forward 10 seconds", box = 46, iconSize = 28) { c.seekBy(10_000); s.bump() }
             }
 
             // ── Bottom: time · scrubber · remaining, then tool row.
@@ -727,18 +756,23 @@ private fun Scrubber(s: PlayerState, c: PlayerController, modifier: Modifier = M
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         down.consume()
+                        if (s.length <= 0) return@awaitEachGesture // live stream: nothing to scrub
                         s.seeking = true
-                        s.time = timeAt(down.position.x)
-                        s.bump()
-                        while (true) {
-                            val ev = awaitPointerEvent()
-                            val ch = ev.changes.firstOrNull() ?: break
-                            if (!ch.pressed) break
-                            s.time = timeAt(ch.position.x)
-                            ch.consume()
+                        try {
+                            s.time = timeAt(down.position.x)
+                            s.bump()
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull() ?: break
+                                if (!ch.pressed) break
+                                s.time = timeAt(ch.position.x)
+                                ch.consume()
+                            }
+                            c.seekTo(s.time)
+                        } finally {
+                            // Also runs if the gesture is cancelled, so the bar never stays frozen.
+                            s.seeking = false
                         }
-                        c.seekTo(s.time)
-                        s.seeking = false
                         s.bump()
                     }
                 },
@@ -769,8 +803,8 @@ private fun Scrubber(s: PlayerState, c: PlayerController, modifier: Modifier = M
 private fun IconBtn(
     icon: ImageVector,
     desc: String,
-    box: Int = 44,
-    iconSize: Int = 22,
+    box: Int = 38,
+    iconSize: Int = 20,
     enabled: Boolean = true,
     tint: Color = Color.White,
     onClick: () -> Unit,
@@ -908,21 +942,48 @@ private fun SubtitleSheet(s: PlayerState, c: PlayerController, close: () -> Unit
     LabeledRow("Delay") {
         MiniStepper("${s.spuDelayMs} ms", onMinus = { c.shiftSpuDelay(-250) }, onPlus = { c.shiftSpuDelay(250) })
     }
-    LabeledRow("Size") { Box(Modifier.weight(1f)) { Segmented(SUB_SCALES.map { it to "$it%" }, s.subScale) { c.setSubScale(it) } } }
-    LabeledRow("Style") {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    fun style(change: PlayerState.() -> Unit) { s.change(); c.applySubStyle() }
+    LabeledRow("Size") {
+        MiniStepper(
+            "${s.subPx} px",
+            onMinus = { style { subPx = (subPx - 2).coerceAtLeast(12) } },
+            onPlus = { style { subPx = (subPx + 2).coerceAtMost(160) } },
+        )
+        Spacer(Modifier.width(8.dp))
+        if (s.subPos > 0f) Pill("Reset position", false) { c.setSubPosition(0f) }
+    }
+    LabeledRow("Font") {
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SUB_FONTS.forEachIndexed { i, (name, _) -> Pill(name, i == s.subFont) { style { subFont = i } } }
+        }
+    }
+    LabeledRow("Colour") {
+        Row(
+            Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
             SUB_COLORS.forEachIndexed { i, (name, rgb) ->
                 Box(
                     Modifier.size(26.dp).clip(CircleShape).background(Color(0xFF000000 or rgb.toLong()))
                         .border(if (i == s.subColor) 2.dp else 0.5.dp, if (i == s.subColor) Accent else Color(0x33FFFFFF), CircleShape)
-                        .pressable(pressedScale = 0.9f) { c.setSubStyle(i, s.subBackground, s.subBold) },
+                        .pressable(pressedScale = 0.9f) { style { subColor = i } },
                 ) { if (i == s.subColor) Icon(Icons.Default.Check, name, tint = Color.Black, modifier = Modifier.align(Alignment.Center).size(14.dp)) }
             }
-            Spacer(Modifier.width(4.dp))
-            Pill("Box", s.subBackground) { c.setSubStyle(s.subColor, !s.subBackground, s.subBold) }
-            Pill("Bold", s.subBold) { c.setSubStyle(s.subColor, s.subBackground, !s.subBold) }
         }
     }
+    LabeledRow("Style") {
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Pill("Bold", s.subBold) { style { subBold = !subBold } }
+            Pill("Shadow", s.subShadow) { style { subShadow = !subShadow } }
+            Pill("Box", s.subBackground) { style { subBackground = !subBackground } }
+            Pill("Override file style", s.subOverride) { style { subOverride = !subOverride } }
+        }
+    }
+    LabeledRow("Outline") { Box(Modifier.weight(1f)) { Segmented(SUB_OUTLINES, s.subOutline) { v -> style { subOutline = v } } } }
+    Text(
+        "Drag the subtitles up or down on the video to move them.",
+        style = Type.caption, color = Secondary, modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+    )
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -1115,6 +1176,7 @@ private fun MoreSheet(
         if (s.playlistSize > 1) ToggleChip(Icons.Default.Shuffle, "Shuffle", s.shuffle) { c.setShuffle(!s.shuffle) }
         ToggleChip(Icons.Default.NightsStay, "Night mode", s.nightMode) { c.setNightMode(!s.nightMode) }
         ToggleChip(Icons.Default.Memory, "HW decoding", s.hwDecoder) { close(); c.setHwDecoder(!s.hwDecoder) }
+        ToggleChip(Icons.Default.FastForward, "Fast seek", s.fastSeek) { c.setFastSeek(!s.fastSeek) }
     }
     Text(
         "Turn off HW decoding if a video stutters or stays black.",

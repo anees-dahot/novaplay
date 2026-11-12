@@ -115,6 +115,7 @@ object VideoRepository {
         val file = diskFile(context, video)
         if (file.exists()) {
             android.graphics.BitmapFactory.decodeFile(file.path)?.let { thumbCache.put(video.id, it); return@withContext it }
+            file.delete() // unreadable (half-written) cache file: make it again
         }
         if (video.id in failed) return@withContext null
         val bmp = gate.withPermit {
@@ -124,7 +125,10 @@ object VideoRepository {
         thumbCache.put(video.id, bmp)
         runCatching {
             file.parentFile?.mkdirs()
-            file.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            // Write beside the target, then rename: a crash mid-write never leaves a broken thumb.
+            val tmp = java.io.File(file.path + ".tmp")
+            tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            if (!tmp.renameTo(file)) tmp.delete()
         }
         bmp
     }
@@ -214,18 +218,36 @@ class Settings(context: Context) {
     var shuffle by bool("shuffle", false)
     var subBackground by bool("sub_bg", false)
     var subBold by bool("sub_bold", false)
+    var subShadow by bool("sub_shadow", true)
+    /** Draw styled (ASS/SSA) subtitles as plain text so the look chosen here applies. */
+    var subOverride by bool("sub_override", false)
+    /** ±jump lands on the nearest keyframe: instant sound, slightly off target. */
+    var fastSeek by bool("fast_seek", true)
 
     private fun int(key: String, def: Int) = object {
         operator fun getValue(t: Any?, p: Any?) = prefs.getInt(key, def)
         operator fun setValue(t: Any?, p: Any?, v: Int) = prefs.edit().putInt(key, v).apply()
     }
     var subColor by int("sub_color", 0)
+    var subFont by int("sub_font", 0)
+    /** Subtitle font size in screen pixels; 0 = not chosen yet (derived from the old scale). */
+    var subPx by int("sub_px", 0)
+    /** 0 none, 1 thin, 2 normal, 3 thick. */
+    var subOutline by int("sub_outline", 2)
+    /** How far subtitles are lifted from the bottom, in 1/1000 of the picture height. */
+    var subPos by int("sub_pos", 0)
     var eqPreset by int("eq_preset", -1)
     var bassDb by int("bass_db", 0)
     /** Hold-to-fast speed ×100. */
     var holdSpeed by int("hold_speed", 200)
     /** Double-tap seek step in seconds. */
     var seekStep by int("seek_step", 10)
+    /** Video size mode (VideoScale ordinal). */
+    var scale by int("scale", 0)
+    /** Volume boost in percent (100 = off). */
+    var volumeBoost by int("volume_boost", 100)
+    /** Player brightness ×1000; -1 = follow the system. */
+    var brightness by int("brightness", -1)
 
     /** Subtitle file the user loaded for a video, reloaded next time it plays. */
     fun subtitleFor(uri: String): String? = prefs.getString("sub:$uri", null)

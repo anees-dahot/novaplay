@@ -28,7 +28,17 @@ enum class VideoScale(val label: String, val vlc: MediaPlayer.ScaleType, val rat
 }
 
 /** Subtitle colours offered in the style picker (RGB). */
-val SUB_COLORS = listOf("White" to 0xFFFFFF, "Yellow" to 0xFFE14D, "Cyan" to 0x5AD8FF, "Green" to 0x7CFC8A)
+val SUB_COLORS = listOf(
+    "White" to 0xFFFFFF, "Yellow" to 0xFFE14D, "Cyan" to 0x5AD8FF, "Green" to 0x7CFC8A,
+    "Orange" to 0xFFA94D, "Pink" to 0xFF8AD1, "Red" to 0xFF5A5A, "Grey" to 0xC8C8C8,
+)
+/** Subtitle fonts: label to font family (empty = libVLC default). This libVLC matches the font's real
+ *  name ("Noto Serif"), not Android aliases like "serif"; a missing font falls back to the default. */
+val SUB_FONTS = listOf(
+    "Default" to "", "Serif" to "Noto Serif", "Mono" to "Droid Sans Mono",
+    "Typewriter" to "Cutive Mono", "Casual" to "Coming Soon", "Cursive" to "Dancing Script",
+)
+val SUB_OUTLINES = listOf(0 to "Off", 1 to "Thin", 2 to "Normal", 3 to "Thick")
 
 enum class LoopMode(val label: String) { OFF("Loop off"), ONE("Loop this video"), ALL("Loop all") }
 
@@ -67,13 +77,13 @@ class PlayerState {
     var audioTrack by mutableIntStateOf(-1)
     var spuTrack by mutableIntStateOf(-1)
     var spuDelayMs by mutableLongStateOf(0L)
-    var subScale by mutableIntStateOf(100)
 
     var chapters by mutableStateOf<List<Chapter>>(emptyList())
     var abStart by mutableLongStateOf(-1L)
     var abEnd by mutableLongStateOf(-1L)
     var loopMode by mutableStateOf(LoopMode.OFF)
     var hwDecoder by mutableStateOf(true)
+    var fastSeek by mutableStateOf(true)
     var backgroundPlay by mutableStateOf(false)
     var autoNext by mutableStateOf(true)
     var nightMode by mutableStateOf(false)
@@ -106,6 +116,15 @@ class PlayerState {
     var subColor by mutableIntStateOf(0)
     var subBackground by mutableStateOf(false)
     var subBold by mutableStateOf(false)
+    var subFont by mutableIntStateOf(0)
+    var subPx by mutableIntStateOf(40)
+    var subOutline by mutableIntStateOf(2)
+    var subShadow by mutableStateOf(true)
+    var subOverride by mutableStateOf(false)
+    /** Subtitles lifted from the bottom, as a fraction of the picture height. */
+    var subPos by mutableFloatStateOf(0f)
+    /** Position under the finger while subtitles are being dragged; null when not dragging. */
+    var subDragPos by mutableStateOf<Float?>(null)
 
     // Online subtitles (OpenSubtitles)
     var onlineSubs by mutableStateOf<List<com.novaplay.player.subs.OnlineSub>>(emptyList())
@@ -166,13 +185,13 @@ interface PlayerController {
     fun selectSpu(id: Int)
     fun pickSubtitleFile()
     fun shiftSpuDelay(deltaMs: Long)
-    fun setSubScale(percent: Int)
     fun playPrev()
     fun playNext()
     fun enterPip()
     fun cycleAbRepeat()
     fun setLoopMode(mode: LoopMode)
     fun setHwDecoder(enabled: Boolean)
+    fun setFastSeek(enabled: Boolean)
     fun setBackgroundPlay(enabled: Boolean)
     fun setAutoNext(enabled: Boolean)
     fun setNightMode(enabled: Boolean)
@@ -185,7 +204,9 @@ interface PlayerController {
     fun setVolumeBoost(percent: Int)
     fun setEqPreset(index: Int)
     fun setBass(db: Int)
-    fun setSubStyle(color: Int, background: Boolean, bold: Boolean)
+    /** Saves the subtitle look held in [PlayerState] and reloads the video so it shows. */
+    fun applySubStyle()
+    fun setSubPosition(fraction: Float)
     /** Title guess used to prefill the online subtitle search. */
     fun subtitleQuery(): String
     fun searchOnlineSubs(query: String)

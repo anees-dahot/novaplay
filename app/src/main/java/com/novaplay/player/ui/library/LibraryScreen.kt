@@ -93,8 +93,9 @@ import kotlinx.coroutines.launch
 enum class SortBy(val label: String) { DATE("Newest"), NAME("Name"), SIZE("Size"), LENGTH("Longest") }
 
 /** "Ep 2" before "Ep 10": compares digit runs as numbers, rest case-insensitively. */
+private val NaturalChunk = Regex("\\d+|\\D+") // built once: sorting calls the comparator thousands of times
 val NaturalOrder: Comparator<String> = Comparator { a, b ->
-    val chunk = Regex("\\d+|\\D+")
+    val chunk = NaturalChunk
     val x = chunk.findAll(a.lowercase()).map { it.value }.toList()
     val y = chunk.findAll(b.lowercase()).map { it.value }.toList()
     for (i in 0 until minOf(x.size, y.size)) {
@@ -153,6 +154,11 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     var refreshTick by remember { mutableIntStateOf(0) }
     val stack = rememberSaveable(saver = listSaver(save = { it.toList() }, restore = { it.toMutableStateList() })) {
         mutableStateListOf(Route.HOME)
+    }
+    // Restored after the app was killed: the PIN was never entered in this process, so don't reopen Private.
+    remember {
+        if (!LibraryStore.privateUnlocked) stack.removeAll { it == Route.PRIVATE }
+        if (stack.isEmpty()) stack.add(Route.HOME)
     }
     var forward by remember { mutableStateOf(true) }
     val route = stack.last()
@@ -263,7 +269,11 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { granted = hasPermission(); refreshTick++ }
     LaunchedEffect(Unit) { if (!granted) permLauncher.launch(permission) }
     LaunchedEffect(granted, refreshTick) {
-        if (granted) all = VideoRepository.load(context)
+        // A failed scan (storage unmounted, permission pulled mid-query) keeps the last list instead of crashing.
+        if (granted) all = runCatching { VideoRepository.load(context) }.getOrElse { e ->
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            all ?: emptyList()
+        }
         all?.minByOrNull { it.size.takeIf { s -> s > 0 } ?: Long.MAX_VALUE }?.let { com.novaplay.player.VlcWarmup.runOnce(context, it.uri) }
         refreshing = false
     }
@@ -283,16 +293,31 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
         SortBy.SIZE -> list.sortedByDescending { it.size }
         SortBy.LENGTH -> list.sortedByDescending { it.durationMs }
     }
-    val routeVideos: List<Video> = remember(route, videos, storeVersion, sort) {
-        when {
-            route.startsWith("folder:") -> sorted(visible.filter { it.folder == route.substringAfter(':') })
-            route.startsWith("playlist:") ->
-                LibraryStore.playlists[route.substringAfter(':')].orEmpty().mapNotNull { byUri[it] }
-            route == Route.FAV -> sorted(visible.filter { it.uri.toString() in LibraryStore.favourites })
-            route == Route.PRIVATE -> sorted(videos.filter { it.uri.toString() in privateSet })
-            route == Route.HISTORY -> LibraryStore.recent.mapNotNull { byUri[it] }.filter { it.uri.toString() !in privateSet }
-            else -> emptyList()
+    fun videosFor(route: String): List<Video> = when {
+        route.startsWith("folder:") -> sorted(visible.filter { it.folder == route.substringAfter(':') })
+        route.startsWith("playlist:") ->
+            LibraryStore.playlists[route.substringAfter(':')].orEmpty().mapNotNull { byUri[it] }
+                .filter { it.uri.toString() !in privateSet } // private videos stay behind the PIN
+        route == Route.FAV -> sorted(visible.filter { it.uri.toString() in LibraryStore.favourites })
+        route == Route.PRIVATE -> sorted(videos.filter { it.uri.toString() in privateSet })
+        route == Route.HISTORY -> LibraryStore.recent.mapNotNull { byUri[it] }.filter { it.uri.toString() !in privateSet }
+        else -> emptyList()
+    }
+    val routeVideos: List<Video> = remember(route, videos, storeVersion, sort) { videosFor(route) }
+    /** Opens [list] at [i]. From Home / History the video goes back into the list it was last played in
+     *  (its playlist, favourites or folder) instead of a "history playlist". */
+    fun openFrom(r: String, list: List<Video>, i: Int) {
+        val v = list[i]
+        val sourced = r.startsWith("folder:") || r.startsWith("playlist:") || r == Route.FAV
+        if (r == Route.HOME || r == Route.HISTORY) {
+            val src = LibraryStore.sourceOf(v.uri.toString())?.takeIf { s -> videosFor(s).any { it.uri == v.uri } }
+                ?: Route.folder(v.folder)
+            val queue = videosFor(src)
+            val at = queue.indexOfFirst { it.uri == v.uri }
+            if (at >= 0) { LibraryStore.playSource = src; onOpen(queue, at); return }
         }
+        LibraryStore.playSource = if (sourced) r else null
+        onOpen(list, i)
     }
     val destinations = remember(videos) {
         val known = videos.filter { it.path.isNotEmpty() }.distinctBy { it.path.lowercase() }
@@ -402,7 +427,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                             if (selecting) {
                                 val id = list[i].id
                                 if (id in selected) selected.remove(id) else selected.add(id)
-                            } else onOpen(list, i)
+                            } else openFrom(r, list, i)
                         }
                         when {
                             r == Route.HOME -> HomeContent(
@@ -418,7 +443,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
                                 onNetwork = { urlPrompt = true },
                                 onPlayFolder = { f ->
                                     val list = sorted(visible.filter { it.folder == f })
-                                    if (list.isNotEmpty()) onOpen(list, 0)
+                                    if (list.isNotEmpty()) { LibraryStore.playSource = null; onOpen(list, 0) }
                                 },
                             )
                             r == Route.PLAYLISTS -> PlaylistsContent(
@@ -481,7 +506,7 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             video = v,
             route = route,
             onDismiss = { menuFor = null },
-            onPlay = { menuFor = null; onOpen(listOf(v), 0) },
+            onPlay = { menuFor = null; LibraryStore.playSource = null; onOpen(listOf(v), 0) },
             onSelect = { menuFor = null; selecting = true; selected.clear(); selected.add(v.id) },
             onAddToPlaylist = { menuFor = null; addToPlaylist = listOf(v) },
             onPrivate = { makePrivate ->
@@ -511,12 +536,12 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             onPlayAll = {
                 folderMenuFor = null
                 val list = sorted(visible.filter { it.folder == f })
-                if (list.isNotEmpty()) onOpen(list, 0)
+                if (list.isNotEmpty()) { LibraryStore.playSource = null; onOpen(list, 0) }
             },
             onShuffle = {
                 folderMenuFor = null
                 val list = visible.filter { it.folder == f }.shuffled()
-                if (list.isNotEmpty()) onOpen(list, 0)
+                if (list.isNotEmpty()) { LibraryStore.playSource = null; onOpen(list, 0) }
             },
             onHide = { folderMenuFor = null; LibraryStore.setFolderHidden(f, true) },
             onRename = { folderMenuFor = null; renameFolderFor = f },
@@ -531,7 +556,8 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             onPlay = {
                 playlistMenuFor = null
                 val list = LibraryStore.playlists[p].orEmpty().mapNotNull { byUri[it] }
-                if (list.isNotEmpty()) onOpen(list, 0)
+                    .filter { it.uri.toString() !in privateSet }
+                if (list.isNotEmpty()) { LibraryStore.playSource = null; onOpen(list, 0) }
             },
             onDelete = { playlistMenuFor = null; LibraryStore.deletePlaylist(p) },
         )
@@ -558,11 +584,14 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
         val ext = v.name.substringAfterLast('.', "")
         TextPrompt("Rename", initial = v.name.substringBeforeLast('.'), onDismiss = { renameFor = null }) { base ->
             renameFor = null
-            val newName = if (ext.isNotEmpty()) "$base.$ext" else base
-            val apply = {
-                handle(MediaActions.applyRename(context, v.uri, newName)) { refreshTick++ }
+            val clean = base.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+            val newName = if (ext.isNotEmpty()) "$clean.$ext" else clean
+            // Android 10 asks for access first, then the rename has to be run again (once).
+            fun apply(retry: Boolean) {
+                val r = MediaActions.applyRename(context, v.uri, newName)
+                if (r is ActionResult.NeedsConfirm && retry) handle(r) { apply(false) } else handle(r) { refreshTick++ }
             }
-            handle(MediaActions.requestRename(context, v.uri)) { apply() }
+            if (clean.isNotEmpty() && newName != v.name) handle(MediaActions.requestRename(context, v.uri)) { apply(true) }
         }
     }
     confirmDelete?.let { list ->
@@ -571,10 +600,17 @@ fun LibraryScreen(onOpen: (videos: List<Video>, index: Int) -> Unit, onOpenUrl: 
             onDismiss = { confirmDelete = null },
             onConfirm = {
                 confirmDelete = null
-                handle(MediaActions.delete(context, list.map { it.uri })) {
-                    LibraryStore.forget(list.map { it.uri.toString() })
-                    selecting = false; selected.clear(); refreshTick++
+                // Android 10 grants access one file at a time: after each approval run the delete again.
+                fun run(attemptsLeft: Int) {
+                    val r = MediaActions.delete(context, list.map { it.uri })
+                    if (r is ActionResult.NeedsConfirm && Build.VERSION.SDK_INT == 29 && attemptsLeft > 0) {
+                        handle(r) { run(attemptsLeft - 1) }
+                    } else handle(r) {
+                        LibraryStore.forget(list.map { it.uri.toString() })
+                        selecting = false; selected.clear(); refreshTick++
+                    }
                 }
+                run(list.size)
             },
         )
     }

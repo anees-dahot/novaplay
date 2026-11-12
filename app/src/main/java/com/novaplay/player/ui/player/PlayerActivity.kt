@@ -104,6 +104,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private var seekGuardUntil = 0L
 
     private val shuffleSeen = mutableSetOf<Int>()
+    private var openFailures = 0
     private var pendingSeek: Long? = null
     private var lastStepAt = 0L
     private var lastStepTarget = -1L
@@ -117,7 +118,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private val rendererItems = linkedMapOf<String, RendererItem>()
     private var multicastLock: WifiManager.MulticastLock? = null
 
-    private var retriever: MediaMetadataRetriever? = null
+    @Volatile private var retriever: MediaMetadataRetriever? = null
+    @Volatile private var retrieverFor: Uri? = null
     private val retrieverLock = Mutex()
 
     private val subtitlePicker =
@@ -137,8 +139,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         resume = ResumeStore(this)
         LibraryStore.init(this)
         settings = AppSettings(this)
-        state.subScale = settings.subtitleScale
         state.hwDecoder = settings.hwDecoder
+        state.fastSeek = settings.fastSeek
         state.backgroundPlay = settings.backgroundPlay
         state.autoNext = settings.autoNext
         state.nightMode = settings.nightMode
@@ -148,10 +150,24 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.subColor = settings.subColor.coerceIn(0, SUB_COLORS.lastIndex)
         state.subBackground = settings.subBackground
         state.subBold = settings.subBold
+        state.subFont = settings.subFont.coerceIn(0, SUB_FONTS.lastIndex)
+        state.subOutline = settings.subOutline.coerceIn(0, 3)
+        state.subShadow = settings.subShadow
+        state.subOverride = settings.subOverride
+        state.subPos = settings.subPos / 1000f
+        // Older versions stored a percentage: turn it into the same size in pixels once.
+        state.subPx = settings.subPx.takeIf { it > 0 } ?: (subBasePx() * settings.subtitleScale / 100f).roundToInt()
         state.eqPreset = settings.eqPreset
         state.bassDb = settings.bassDb
         state.holdSpeed = settings.holdSpeed / 100f
         state.seekStep = settings.seekStep
+        state.scale = VideoScale.entries.getOrElse(settings.scale) { VideoScale.FIT }
+        state.volumeBoost = settings.volumeBoost
+        // Brightness picked in the player last time (‑1 = follow the system).
+        if (settings.brightness >= 0) {
+            brightness = settings.brightness / 1000f
+            window.attributes = window.attributes.apply { screenBrightness = brightness }
+        }
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -177,8 +193,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Save the old video's position before the playlist changes: afterwards videoUri is the new one.
         saveResume()
-        if (readPlaylist(intent)) switchTo(index)
+        if (readPlaylist(intent)) { setIntent(intent); switchTo(index, saveOld = false) }
     }
 
     /** Reads either a folder playlist (from our library) or a single video (from other apps). */
@@ -190,6 +207,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             index = i.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, list.lastIndex)
         } else {
             val uri = i.data ?: return false
+            LibraryStore.playSource = null
             uris = listOf(uri)
             titles = listOf(i.getStringExtra(EXTRA_TITLE) ?: displayName(uri) ?: uri.lastPathSegment ?: "Video")
             index = 0
@@ -205,6 +223,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         trackRestoreFor = null
         spuRestoreFor = null
         LibraryStore.markPlayed(videoUri.toString())
+        LibraryStore.rememberSource(videoUri.toString())
         state.hasPrev = index > 0
         state.hasNext = index < uris.lastIndex || (state.shuffle && uris.size > 1)
         state.title = videoTitle
@@ -219,12 +238,15 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 "--no-drop-late-frames",
                 "--no-skip-frames",
                 "--rtsp-tcp",
-                "--sub-text-scale=${state.subScale}",
+                "--sub-text-scale=${(state.subPx * 100f / subBasePx()).roundToInt().coerceIn(10, 500)}",
+                "--sub-margin=${(state.subPos * subRefHeight()).roundToInt()}",
                 "--freetype-color=${SUB_COLORS[state.subColor].second}",
                 "--freetype-background-opacity=${if (state.subBackground) 170 else 0}",
                 "--freetype-background-color=0",
-                "--freetype-outline-thickness=${if (state.subBackground) 0 else 4}",
-            ) + (if (state.subBold) listOf("--freetype-bold") else emptyList())),
+                "--freetype-outline-thickness=${if (state.subBackground) 0 else state.subOutline * 2}",
+                "--freetype-shadow-opacity=${if (state.subShadow) 128 else 0}",
+            ) + (if (state.subBold) listOf("--freetype-bold") else emptyList())
+              + (SUB_FONTS[state.subFont].second.takeIf { it.isNotEmpty() }?.let { listOf("--freetype-font=$it") } ?: emptyList())),
         )
         player = MediaPlayer(libVLC)
         player.setEventListener(::onPlayerEvent)
@@ -233,9 +255,11 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             openMedia()
         } catch (e: Exception) {
             Toast.makeText(this, "Can't open video: ${e.message}", Toast.LENGTH_LONG).show()
-            if (state.hasNext) main.post { playNext() } else finish()
+            // Skip to the next one, but give up once every video failed (shuffle would loop forever).
+            if (state.hasNext && ++openFailures < uris.size) main.post { playNext() } else finish()
             return
         }
+        openFailures = 0
         media.setHWDecoderEnabled(state.hwDecoder, false)
         if (startMs > RESUME_MIN_MS) media.addOption(":start-time=${startMs / 1000.0}")
         state.resumedFrom = if (startMs > RESUME_MIN_MS) startMs else -1L
@@ -243,7 +267,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         media.release()
         // Re-attach a subtitle file the user picked for this video before.
         settings.subtitleFor(videoUri.toString())?.let { path ->
-            if (File(path).exists()) player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(File(path)), true)
+            if (File(path).exists()) player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(File(path))), true)
         }
 
         // On first launch the view doesn't exist yet; createVideoView attaches + plays.
@@ -270,13 +294,32 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         VLCVideoLayout(context).also {
             videoLayout = it
             if (!released) attachAndPlay(it)
+            // Coming back from another app gives us a new surface. libVLC only turns the picture back on by
+            // itself when the video was playing, so a paused video stayed black: do it ourselves.
+            it.findSurfaceView()?.holder?.addCallback(object : android.view.SurfaceHolder.Callback {
+                override fun surfaceCreated(h: android.view.SurfaceHolder) { main.post(::restoreVideo) }
+                override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hgt: Int) {}
+                override fun surfaceDestroyed(h: android.view.SurfaceHolder) {}
+            })
         }
+
+    private fun restoreVideo() {
+        if (released || !::player.isInitialized) return
+        if (player.videoTrack == -1 && player.videoTracksCount > 0) {
+            player.setVideoTrackEnabled(true)
+            // Paused: nothing is decoded, so the new surface stays empty. A seek to "here" draws the frame.
+            if (!player.isPlaying && player.time > 0) main.postDelayed({
+                if (!released && !player.isPlaying) player.time = player.time
+            }, 200)
+        }
+    }
 
     private fun onPlayerEvent(event: MediaPlayer.Event) {
         if (released) return
         when (event.type) {
             MediaPlayer.Event.Playing -> {
                 state.playing = true
+                restoreVideo()
                 requestAudioFocus()
                 if (player.rate != state.rate && !state.holdingFast) player.rate = state.rate
                 applyAudio()
@@ -312,7 +355,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 Toast.makeText(this, "Playback error", Toast.LENGTH_LONG).show()
                 // Software decoding often fixes black screen / codec issues. Only for this session:
                 // one bad file shouldn't switch the user's saved preference.
-                if (state.hwDecoder) { state.hwDecoder = false; state.flash("Switched to software decoder"); restartSameVideo() }
+                if (state.hwDecoder) { state.hwDecoder = false; state.flash("Switched to software decoder"); restartSameVideo(afterError = true) }
                 else finish()
             }
         }
@@ -425,9 +468,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     /** Switches to another video in the playlist. */
-    private fun switchTo(newIndex: Int, fromStart: Boolean = false) {
+    private fun switchTo(newIndex: Int, fromStart: Boolean = false, saveOld: Boolean = true) {
         if (newIndex !in uris.indices) return
-        saveResume()
+        if (saveOld) saveResume()
         releasePlayer()
         index = newIndex
         state.resetForNewVideo()
@@ -437,14 +480,17 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     /** Restarts the same video at the same spot (needed for libVLC start-up options). */
-    private fun restartSameVideo() {
-        val pos = player.time
+    private fun restartSameVideo(afterError: Boolean = false) {
+        if (released) return
+        // After a playback error libVLC reports no time and "not playing": use what the UI last showed and keep playing.
+        val pos = player.time.takeIf { it > 0 } ?: state.time
         val spu = state.spuTrack
         val audioId = state.audioTrack
-        val wasPaused = !player.isPlaying
+        val wasPaused = !afterError && !player.isPlaying
         releasePlayer()
         createPlayer(startMs = pos)
         if (released) return
+        state.resumedFrom = -1L // not a resume: no "Start over" pill
         // Short positions skip the start-time option (resume threshold), so seek once playing.
         if (pos in 1..RESUME_MIN_MS) pendingSeek = pos
         player.setEventListener { e ->
@@ -468,16 +514,24 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.bump()
     }
 
-    override fun seekTo(ms: Long) {
+    override fun seekTo(ms: Long) = seekTo(ms, fast = false)
+
+    /** [fast] jumps to the keyframe before the target: no decode-forward wait, so sound comes back at once. */
+    private fun seekTo(ms: Long, fast: Boolean) {
         if (released) return
         val target = if (state.length > 0) ms.coerceIn(0, state.length) else ms.coerceAtLeast(0)
-        player.time = target
+        player.setTime(target, fast)
         state.time = target
         seekTarget = target
         seekGuardUntil = SystemClock.uptimeMillis() + 800
     }
 
-    override fun seekBy(deltaMs: Long) = seekTo(player.time + deltaMs)
+    override fun seekBy(deltaMs: Long) {
+        if (released) return
+        // Quick repeated taps: libVLC still reports the old time, so add on top of the last target instead.
+        val base = if (SystemClock.uptimeMillis() < seekGuardUntil) seekTarget else player.time
+        seekTo(base + deltaMs, fast = state.fastSeek)
+    }
 
     override fun setRate(rate: Float) {
         state.rate = rate
@@ -500,6 +554,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun setScale(scale: VideoScale) {
         state.scale = scale
+        settings.scale = scale.ordinal
         applyScale(scale)
         state.flash(scale.label)
     }
@@ -532,7 +587,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             contentResolver.openInputStream(uri)!!.use { input ->
                 file.outputStream().use { input.copyTo(it) }
             }
-            player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(file), true)
+            player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(file)), true)
             settings.setSubtitleFor(videoUri.toString(), file.absolutePath)
         }.onSuccess {
             state.flash("Subtitle loaded")
@@ -546,10 +601,66 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         player.spuDelay = state.spuDelayMs * 1000 // libVLC wants microseconds
     }
 
-    override fun setSubScale(percent: Int) {
-        if (percent == state.subScale) return
-        state.subScale = percent
-        settings.subtitleScale = percent
+    /** libVLC's default subtitle size: 6.25% of the picture height. */
+    private fun subBasePx() = 0.0625f * subRefHeight()
+    private fun subRefHeight() = resources.displayMetrics.let { minOf(it.widthPixels, it.heightPixels) }
+
+    private val subRestart = Runnable { restartSameVideo() }
+
+    /**
+     * With "Override file style" on, a styled ASS/SSA file is rewritten as plain SRT (same timing and text),
+     * because libVLC draws styled subtitles with the file's own font, size and colour.
+     */
+    private fun plainSubtitle(src: File): File {
+        if (!state.subOverride || src.extension.lowercase() !in setOf("ass", "ssa")) return src
+        val out = File(File(cacheDir, "plain").apply { mkdirs() }, "${src.nameWithoutExtension}.srt")
+        if (out.exists() && out.lastModified() >= src.lastModified()) return out
+        return runCatching {
+            fun stamp(t: String): String { // 0:01:02.50 -> 00:01:02,500
+                val parts = t.trim().split('.')
+                val hms = parts[0].split(':').map { it.toInt() }
+                return "%02d:%02d:%02d,%s".format(hms[0], hms[1], hms[2], parts.getOrElse(1) { "0" }.padEnd(3, '0').take(3))
+            }
+            val tags = Regex("\\{[^}]*\\}")
+            var inEvents = false
+            var fields = listOf("layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text")
+            var n = 0
+            val sb = StringBuilder()
+            src.readLines().forEach { raw ->
+                val line = raw.trim().removePrefix("\uFEFF")
+                when {
+                    line.startsWith("[") -> inEvents = line.equals("[Events]", ignoreCase = true)
+                    inEvents && line.startsWith("Format:") ->
+                        fields = line.substringAfter(':').split(',').map { it.trim().lowercase() }
+                    inEvents && line.startsWith("Dialogue:") -> {
+                        val cols = line.substringAfter(':').split(",", limit = fields.size)
+                        val raw2 = cols.getOrNull(fields.indexOf("text")) ?: return@forEach
+                        if ("\\p1" in raw2) return@forEach // vector drawing, not text
+                        val text = raw2.replace(tags, "").replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").trim()
+                        if (text.isEmpty()) return@forEach
+                        sb.append(++n).append('\n')
+                            .append(stamp(cols[fields.indexOf("start")])).append(" --> ").append(stamp(cols[fields.indexOf("end")])).append('\n')
+                            .append(text).append("\n\n")
+                    }
+                }
+            }
+            if (n == 0) src else out.also { it.writeText(sb.toString()) }
+        }.getOrDefault(src)
+    }
+
+    override fun applySubStyle() {
+        settings.subColor = state.subColor; settings.subBackground = state.subBackground; settings.subBold = state.subBold
+        settings.subFont = state.subFont; settings.subPx = state.subPx; settings.subOutline = state.subOutline
+        settings.subShadow = state.subShadow; settings.subOverride = state.subOverride
+        // Subtitle options only apply to a new libVLC instance; wait for the taps to stop before reloading.
+        main.removeCallbacks(subRestart)
+        main.postDelayed(subRestart, 450)
+    }
+
+    override fun setSubPosition(fraction: Float) {
+        state.subPos = fraction.coerceIn(0f, 0.85f)
+        settings.subPos = (state.subPos * 1000).roundToInt()
+        main.removeCallbacks(subRestart)
         restartSameVideo()
     }
 
@@ -581,6 +692,12 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.loopMode = mode
         settings.loopMode = mode.ordinal
         state.flash(mode.label)
+    }
+
+    override fun setFastSeek(enabled: Boolean) {
+        state.fastSeek = enabled
+        settings.fastSeek = enabled
+        state.flash(if (enabled) "Fast seek on" else "Exact seek")
     }
 
     override fun setHwDecoder(enabled: Boolean) {
@@ -668,8 +785,16 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (surface.width == 0 || surface.height == 0) return
         val bmp = Bitmap.createBitmap(surface.width, surface.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(surface, bmp, { result ->
-            if (result == PixelCopy.SUCCESS) saveScreenshot(bmp)
-            else Toast.makeText(this, "Screenshot failed", Toast.LENGTH_SHORT).show()
+            if (result != PixelCopy.SUCCESS) {
+                Toast.makeText(this, "Screenshot failed", Toast.LENGTH_SHORT).show()
+                return@request
+            }
+            // PNG encoding of a full frame takes a while: keep it off the UI thread.
+            lifecycleScope.launch {
+                val saved = withContext(Dispatchers.IO) { saveScreenshot(bmp).also { bmp.recycle() } }
+                if (saved) state.flash(if (Build.VERSION.SDK_INT >= 29) "Screenshot saved to Pictures/NovaPlay" else "Screenshot saved")
+                else Toast.makeText(this@PlayerActivity, "Screenshot failed", Toast.LENGTH_SHORT).show()
+            }
         }, main)
     }
 
@@ -679,9 +804,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         return null
     }
 
-    private fun saveScreenshot(bmp: Bitmap) {
+    private fun saveScreenshot(bmp: Bitmap): Boolean {
         val name = "NovaPlay_${System.currentTimeMillis()}.png"
-        runCatching {
+        return runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, name)
@@ -694,19 +819,22 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 val dir = getExternalFilesDir(Environment.DIRECTORY_PICTURES)!!
                 File(dir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
-        }.onSuccess { state.flash("Screenshot saved to Pictures/NovaPlay") }
-            .onFailure { Toast.makeText(this, "Screenshot failed", Toast.LENGTH_SHORT).show() }
+        }.isSuccess
     }
 
     override suspend fun previewFrame(ms: Long): Bitmap? = withContext(Dispatchers.IO) {
         retrieverLock.withLock {
             runCatching {
+                val uri = videoUri
+                // A preview still running while the video switched can leave the old file's retriever behind.
+                if (retrieverFor != uri) { retriever?.let { old -> runCatching { old.release() } }; retriever = null }
                 val r = retriever ?: MediaMetadataRetriever().also {
                     // File descriptor works on more phones than a content Uri.
                     runCatching {
-                        contentResolver.openFileDescriptor(videoUri, "r")!!.use { fd -> it.setDataSource(fd.fileDescriptor) }
-                    }.getOrElse { _ -> it.setDataSource(this@PlayerActivity, videoUri) }
+                        contentResolver.openFileDescriptor(uri, "r")!!.use { fd -> it.setDataSource(fd.fileDescriptor) }
+                    }.getOrElse { _ -> it.setDataSource(this@PlayerActivity, uri) }
                     retriever = it
+                    retrieverFor = uri
                 }
                 val us = ms * 1000
                 if (Build.VERSION.SDK_INT >= 27) {
@@ -739,12 +867,14 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (volumeAcc < 0) volumeAcc = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
         volumeAcc = (volumeAcc + delta * max * 1.5f).coerceIn(0f, max.toFloat())
-        audio.setStreamVolume(AudioManager.STREAM_MUSIC, volumeAcc.roundToInt(), 0)
+        // Some phones refuse volume changes in Do Not Disturb: ignore instead of crashing.
+        runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, volumeAcc.roundToInt(), 0) }
         return (volumeAcc / max * 100).roundToInt()
     }
 
     override fun endGesture() {
         volumeAcc = -1f
+        if (brightness >= 0) settings.brightness = (brightness * 1000).roundToInt()
     }
 
     override fun toggleRotation() {
@@ -834,6 +964,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun setVolumeBoost(percent: Int) {
         state.volumeBoost = percent.coerceIn(100, 200)
+        settings.volumeBoost = state.volumeBoost
         if (!released) player.volume = state.volumeBoost
         state.flash("Volume ${state.volumeBoost}%")
     }
@@ -850,12 +981,6 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         applyAudio()
     }
 
-    override fun setSubStyle(color: Int, background: Boolean, bold: Boolean) {
-        if (color == state.subColor && background == state.subBackground && bold == state.subBold) return
-        state.subColor = color; state.subBackground = background; state.subBold = bold
-        settings.subColor = color; settings.subBackground = background; settings.subBold = bold
-        restartSameVideo() // freetype options only apply to a new libVLC instance
-    }
 
     // ---------- Online subtitles ----------
 
@@ -901,7 +1026,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             runCatching { OpenSubtitles.download(sub, File(filesDir, "subs")) }
                 .onSuccess { file ->
                     if (!released) {
-                        player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(file), true)
+                        player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(file)), true)
                         settings.setSubtitleFor(key, file.absolutePath)
                         state.flash("Subtitle loaded")
                         state.onlineLoaded++
@@ -1051,13 +1176,21 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         super.onStart()
         PlaybackService.stop(this)
         if (released) return
-        player.setVideoTrackEnabled(true)
+        // Leaving the app destroys the surface and libVLC then drops its views for good: without attaching
+        // them again the picture stays black until the video is reopened.
+        val layout = videoLayout
+        if (layout != null && !player.vlcVout.areViewsAttached()) {
+            player.attachViews(layout, null, true, false)
+            applyScale(state.scale)
+        }
+        restoreVideo()
         if (wasPlaying && videoLayout != null && !player.isPlaying) player.play()
         wasPlaying = true
     }
 
     override fun onDestroy() {
         main.removeCallbacks(sleepRunnable)
+        main.removeCallbacks(subRestart)
         if (!isChangingConfigurations) saveResume()
         releasePlayer()
         closeRetriever()

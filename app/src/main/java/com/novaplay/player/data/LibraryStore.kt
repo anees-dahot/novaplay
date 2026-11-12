@@ -37,6 +37,20 @@ object LibraryStore {
     /** Most recent first. */
     val recent: List<String> get() = list("recent")
     fun markPlayed(uri: String) = putList("recent", (listOf(uri) + recent.filter { it != uri }).take(200))
+    /** Where the next video is being opened from ("folder:…", "playlist:…", "fav"); null = keep what we knew. */
+    @Volatile var playSource: String? = null
+    private fun sources() = runCatching { JSONObject(prefs.getString("sources", "{}")!!) }.getOrElse { JSONObject() }
+    /** Remembers the list a video was playing in, so History can reopen it inside that list. */
+    fun rememberSource(uri: String) {
+        val src = playSource ?: return
+        val old = sources()
+        val keep = recent.toSet() + uri
+        val json = JSONObject()
+        old.keys().forEach { if (it in keep) json.put(it, old.getString(it)) }
+        json.put(uri, src)
+        prefs.edit().putString("sources", json.toString()).apply()
+    }
+    fun sourceOf(uri: String): String? = sources().optString(uri).ifEmpty { null }
     fun removeRecent(uris: Collection<String>) = putList("recent", recent - uris.toSet())
     fun clearRecent() = putList("recent", emptyList())
     val played: Set<String> get() = set("played") + recent

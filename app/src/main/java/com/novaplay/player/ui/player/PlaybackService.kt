@@ -45,12 +45,14 @@ class PlaybackService : Service() {
         private const val ACTION_NEXT = "next"
         private const val ACTION_UPDATE = "update"
 
-        fun start(context: Context) =
-            ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+        /** Android may refuse to start a service from the background; playback then simply continues without the notification. */
+        fun start(context: Context) {
+            runCatching { ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java)) }
+        }
 
         /** Refresh notification after play/pause/track changes; no-op if not running. */
         fun update(context: Context) {
-            if (running) context.startService(Intent(context, PlaybackService::class.java).setAction(ACTION_UPDATE))
+            if (running) runCatching { context.startService(Intent(context, PlaybackService::class.java).setAction(ACTION_UPDATE)) }
         }
 
         fun stop(context: Context) = context.stopService(Intent(context, PlaybackService::class.java))

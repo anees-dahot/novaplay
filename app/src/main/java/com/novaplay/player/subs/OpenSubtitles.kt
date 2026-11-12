@@ -190,7 +190,9 @@ object FreeSubtitles {
     suspend fun download(sub: OnlineSub, dir: File): File = withContext(Dispatchers.IO) {
         dir.mkdirs()
         val out = File(dir, "os_${sub.fileId}.srt")
-        val c = (URL(sub.directLink).openConnection() as HttpURLConnection).apply {
+        // The search API hands out plain http links, which Android blocks; the same host serves https.
+        val link = sub.directLink.orEmpty().replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "https://")
+        val c = (URL(link).openConnection() as HttpURLConnection).apply {
             connectTimeout = 10_000; readTimeout = 20_000
             setRequestProperty("User-Agent", UA)
         }

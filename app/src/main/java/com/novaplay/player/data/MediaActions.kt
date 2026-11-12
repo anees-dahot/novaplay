@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /** Result of a file operation: done, or Android needs the user to confirm first. */
@@ -95,6 +96,7 @@ object MediaActions {
         var done = 0L
         var failed = 0
         for (v in videos) {
+            ensureActive() // screen closed: stop instead of copying the rest in the background
             val ok = runCatching { copyOne(context, v, path) { n -> done += n; onProgress(done.toFloat() / total) } }.isSuccess
             if (!ok) failed++
         }
@@ -126,7 +128,8 @@ object MediaActions {
             val dir = java.io.File(android.os.Environment.getExternalStorageDirectory(), path).apply { mkdirs() }
             var target = java.io.File(dir, v.name)
             var n = 1
-            while (target.exists()) target = java.io.File(dir, "${v.name.substringBeforeLast('.')} (${n++}).${v.name.substringAfterLast('.')}")
+            val ext = v.name.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+            while (target.exists()) target = java.io.File(dir, "${v.name.substringBeforeLast('.')} (${n++})$ext")
             try {
                 cr.openInputStream(v.uri)!!.use { i -> target.outputStream().use { o -> pump(i, o, onBytes) } }
             } catch (e: Throwable) { target.delete(); throw e }
@@ -159,6 +162,7 @@ object MediaActions {
         val total = videos.sumOf { it.size }.coerceAtLeast(1)
         var done = 0L
         for (v in videos) {
+            ensureActive()
             if (v.path.equals(path, ignoreCase = true)) { done += v.size; continue }
             val fast = runCatching {
                 if (Build.VERSION.SDK_INT >= 29) {
@@ -222,17 +226,19 @@ object MediaActions {
         )
         runCatching {
             val r = MediaMetadataRetriever()
-            r.setDataSource(context, video.uri)
-            val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-            val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-            if (w != null && h != null) rows += "Resolution" to "$w × $h"
-            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.let {
-                rows += "Bitrate" to "%.1f Mbps".format(it / 1_000_000.0)
-            }
-            r.release()
+            try {
+                r.setDataSource(context, video.uri)
+                val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                if (w != null && h != null) rows += "Resolution" to "$w × $h"
+                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.let {
+                    rows += "Bitrate" to "%.1f Mbps".format(it / 1_000_000.0)
+                }
+            } finally { r.release() }
         }
         runCatching {
             val ex = MediaExtractor()
+            try {
             ex.setDataSource(context, video.uri, null)
             for (i in 0 until ex.trackCount) {
                 val f = ex.getTrackFormat(i)
@@ -252,7 +258,7 @@ object MediaActions {
                     mime.contains("text") || mime.contains("subrip") -> rows += "Subtitles" to codecName(mime)
                 }
             }
-            ex.release()
+            } finally { ex.release() }
         }
         VideoInfo(rows)
     }

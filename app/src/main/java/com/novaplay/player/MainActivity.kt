@@ -19,7 +19,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             AppTheme {
-                LibraryScreen(onOpen = { videos, index ->
+                LibraryScreen(onOpen = { all, at ->
+                    // Android caps how much an intent can carry (~1 MB): a huge folder would crash the launch,
+                    // so pass a window of videos around the one that was tapped.
+                    val from = (at - PLAYLIST_WINDOW / 2).coerceIn(0, (all.size - PLAYLIST_WINDOW).coerceAtLeast(0))
+                    val videos = all.subList(from, minOf(all.size, from + PLAYLIST_WINDOW))
+                    val index = at - from
                     startActivity(
                         Intent(this, PlayerActivity::class.java)
                             .putParcelableArrayListExtra(PlayerActivity.EXTRA_URIS, ArrayList(videos.map { it.uri }))
@@ -36,7 +41,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-val Accent = Color(0xFF3D8BFF)      // single accent, used sparingly
+private const val PLAYLIST_WINDOW = 500
+
+val Accent = Color(0xFF3D8BFF)     // single accent, used sparingly
 val Navy = Color(0xFF0B0B0D)        // app background (neutral graphite, not tinted)
 val NavySurface = Color(0xFF161618) // cards, bars, dialogs
 val NavyHigh = Color(0xFF232327)    // raised elements / thumb placeholders
