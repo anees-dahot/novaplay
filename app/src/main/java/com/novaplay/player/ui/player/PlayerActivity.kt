@@ -219,6 +219,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     private fun createPlayer(startMs: Long) {
         released = false
+        audioApplied = false
+        appliedEq = null
         // Fresh player (new video, loop, or restart): remembered tracks must be applied again.
         trackRestoreFor = null
         spuRestoreFor = null
@@ -235,8 +237,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         libVLC = LibVLC(
             this,
             ArrayList(listOf(
-                "--no-drop-late-frames",
-                "--no-skip-frames",
+                // Let late video frames drop: forcing every frame makes the audio wait for the decoder to
+                // catch up after a seek or a speed change, which is heard as a 2-3 s stall.
+                "--audio-time-stretch",
                 "--rtsp-tcp",
                 "--sub-text-scale=${(state.subPx * 100f / subBasePx()).roundToInt().coerceIn(10, 500)}",
                 "--sub-margin=${(state.subPos * subRefHeight()).roundToInt()}",
@@ -322,7 +325,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 restoreVideo()
                 requestAudioFocus()
                 if (player.rate != state.rate && !state.holdingFast) player.rate = state.rate
-                applyAudio()
+                // Only once per player: re-setting the equalizer restarts libVLC's audio chain (a gap).
+                if (!audioApplied) { audioApplied = true; applyAudio() }
                 pendingSeek?.let { player.time = it; pendingSeek = null }
                 refreshTracks()
                 loadChapters()
@@ -938,12 +942,20 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     // ---------- Audio ----------
 
+    private var audioApplied = false
+    /** Last equalizer actually handed to libVLC, so unchanged settings never restart the audio. */
+    private var appliedEq: Pair<Int, Int>? = null
+
     private fun applyAudio() {
         if (released) return
         player.volume = state.volumeBoost
         player.audioDelay = state.audioDelayMs * 1000
+        val want = state.eqPreset to state.bassDb
+        if (want == appliedEq) return
+        val hadEq = appliedEq != null && appliedEq != (-1 to 0)
+        appliedEq = want
         if (state.eqPreset < 0 && state.bassDb == 0) {
-            player.setEqualizer(null)
+            if (hadEq) player.setEqualizer(null)
             return
         }
         val eq = if (state.eqPreset >= 0) MediaPlayer.Equalizer.createFromPreset(state.eqPreset)
@@ -1155,6 +1167,14 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun onPause() {
         super.onPause()
+        // Leaving the player: onStop/onDestroy only come once the library has settled (seconds later),
+        // so silence it now instead of letting the sound run on behind the library.
+        if (isFinishing && !released && ::player.isInitialized) {
+            saveResume()
+            player.volume = 0
+            player.pause()
+            return
+        }
         // Start the notification service while we're still allowed to (app still visible).
         if (!released && state.backgroundPlay && player.isPlaying && !isFinishing) PlaybackService.start(this)
     }

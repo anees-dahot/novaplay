@@ -607,9 +607,12 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
             // ── Center transport: plain icons, only play/pause gets a soft backing.
             Row(
                 Modifier.align(Alignment.Center),
-                horizontalArrangement = Arrangement.spacedBy(30.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (s.playlistSize > 1) 22.dp else 30.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (s.playlistSize > 1) {
+                    IconBtn(Icons.Default.SkipPrevious, "Previous", box = 46, iconSize = 30) { c.playPrev(); s.bump() }
+                }
                 IconBtn(Icons.Default.Replay10, "Back 10 seconds", box = 46, iconSize = 28) { c.seekBy(-10_000); s.bump() }
                 Box(
                     Modifier.size(56.dp).background(Scrim, CircleShape)
@@ -632,6 +635,12 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                     }
                 }
                 IconBtn(Icons.Default.Forward10, "Forward 10 seconds", box = 46, iconSize = 28) { c.seekBy(10_000); s.bump() }
+                if (s.playlistSize > 1) {
+                    IconBtn(
+                        Icons.Default.SkipNext, "Next", box = 46, iconSize = 30,
+                        enabled = s.hasNext || s.loopMode == LoopMode.ALL,
+                    ) { c.playNext(); s.bump() }
+                }
             }
 
             // ── Bottom: time · scrubber · remaining, then tool row.
@@ -648,12 +657,6 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
                     IconBtn(Icons.Default.LockOpen, "Lock screen") {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         s.locked = true; s.bump()
-                    }
-                    if (s.playlistSize > 1) {
-                        IconBtn(Icons.Default.SkipPrevious, "Previous") { c.playPrev(); s.bump() }
-                        IconBtn(Icons.Default.SkipNext, "Next", enabled = s.hasNext || s.loopMode == LoopMode.ALL) {
-                            c.playNext(); s.bump()
-                        }
                     }
                     if (s.playlistSize > 1) {
                         IconBtn(Icons.Default.Shuffle, "Shuffle", tint = if (s.shuffle) Accent else Color.White) {

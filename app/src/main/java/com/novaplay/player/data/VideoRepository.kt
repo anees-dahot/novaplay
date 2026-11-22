@@ -185,8 +185,9 @@ class ResumeStore(context: Context) {
     private val prefs = context.getSharedPreferences("resume", Context.MODE_PRIVATE)
 
     fun get(key: String): Long = prefs.getLong(key, 0L)
-    fun put(key: String, ms: Long) { prefs.edit().putLong(key, ms).commit() }
-    fun clear(key: String) = prefs.edit().remove(key).apply()
+    // Continue watching filters on resume points, so let the library recompose when they change.
+    fun put(key: String, ms: Long) { prefs.edit().putLong(key, ms).commit(); LibraryStore.touch() }
+    fun clear(key: String) { prefs.edit().remove(key).apply(); LibraryStore.touch() }
 }
 
 /** Small user settings, remembered between videos. */

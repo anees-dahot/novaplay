@@ -27,6 +27,8 @@ object LibraryStore {
     }
 
     private fun changed() { version++ }
+    /** Something the library shows changed elsewhere (e.g. a resume point): recompose. */
+    fun touch() = changed()
     private fun set(key: String) = prefs.getStringSet(key, emptySet())!!.toSet()
     private fun putSet(key: String, v: Set<String>) { prefs.edit().putStringSet(key, v).apply(); changed() }
     private fun list(key: String): List<String> =
