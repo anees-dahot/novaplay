@@ -540,20 +540,31 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun setRate(rate: Float) {
         state.rate = rate
         settings.speed = (rate * 100).toInt()
-        player.rate = rate
+        changeRate(rate)
     }
 
     override fun startHoldFast() {
         if (state.holdingFast || !player.isPlaying) return
         rateBeforeHold = state.rate
         state.holdingFast = true
-        player.rate = state.holdSpeed
+        changeRate(state.holdSpeed)
     }
 
     override fun stopHoldFast() {
         if (!state.holdingFast) return
         state.holdingFast = false
-        player.rate = rateBeforeHold
+        changeRate(rateBeforeHold)
+    }
+
+    /**
+     * libVLC 3 re-bases its clock on a speed change and then finds ~1 s of already-queued audio "too
+     * early/late": it plays silence or flushes until it catches up (the stall heard on 2x start/end).
+     * Seeking to where we are right away throws that stale audio out and resyncs in a few frames.
+     */
+    private fun changeRate(rate: Float) {
+        if (released || player.rate == rate) return
+        player.rate = rate
+        if (player.isPlaying && player.length > 0) player.setTime(player.time, false)
     }
 
     override fun setScale(scale: VideoScale) {
