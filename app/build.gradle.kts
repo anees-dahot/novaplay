@@ -8,7 +8,7 @@ plugins {
 }
 
 // Bump this for each release (release.sh does it for you).
-val appVersion = "1.15.1"
+val appVersion = "1.15.2"
 
 android {
     namespace = "com.novaplay.player"
