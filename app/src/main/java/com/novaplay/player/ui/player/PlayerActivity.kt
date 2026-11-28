@@ -1243,7 +1243,11 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     private fun showSystemBars() {
-        WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        // Only the navigation bar (like MX): the status bar would sit over the top-row buttons.
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.statusBars())
+            show(WindowInsetsCompat.Type.navigationBars())
+        }
     }
 
     private fun hideSystemBars() {
