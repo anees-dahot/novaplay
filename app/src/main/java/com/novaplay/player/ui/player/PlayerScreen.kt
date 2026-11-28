@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.novaplay.player.ui.player
 
 import androidx.compose.animation.AnimatedContent
@@ -22,6 +24,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -382,9 +386,11 @@ private fun LevelBar(hud: Hud) {
         Spacer(Modifier.width(10.dp))
         Box(Modifier.size(width = 140.dp, height = 4.dp).clip(CircleShape).background(TrackColor)) {
             Box(Modifier.fillMaxHeight().fillMaxWidth(level).background(Color.White))
+            // Volume boost (above 100%) fills the bar again in a warning colour.
+            if (hud.level > 1f) Box(Modifier.fillMaxHeight().fillMaxWidth((hud.level - 1f).coerceIn(0f, 1f)).background(Color(0xFFFFA726)))
         }
         Spacer(Modifier.width(10.dp))
-        Text("${(level * 100).toInt()}", color = Color.White, style = Tabular, modifier = Modifier.width(28.dp))
+        Text("${(hud.level * 100).toInt()}", color = Color.White, style = Tabular, modifier = Modifier.width(32.dp))
     }
 }
 
@@ -445,9 +451,12 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                 val down = awaitFirstDown(requireUnconsumed = false)
                 val slop = viewConfiguration.touchSlop
                 val leftSide = down.position.x < size.width / 2
-                // Ignore swipes that start in the system-gesture strips (status bar / home bar).
-                val edge = 32.dp.toPx()
-                val nearEdge = down.position.y < edge || down.position.y > size.height - edge
+                // Ignore swipes that start in the system-gesture strips (status bar, home bar, back
+                // edges): pulling the hidden bars in must not also seek or change volume.
+                val edgeY = 48.dp.toPx()
+                val edgeX = 28.dp.toPx()
+                val nearEdge = down.position.y < edgeY || down.position.y > size.height - edgeY ||
+                    down.position.x < edgeX || down.position.x > size.width - edgeX
                 val startTime = s.time
                 var mode = GestureMode.NONE
                 var dx = 0f
@@ -497,10 +506,12 @@ private fun Modifier.composedGestures(s: PlayerState, c: PlayerController): Modi
                     val delta = change.position - change.previousPosition
                     dx += delta.x
                     dy += delta.y
-                    if (mode == GestureMode.NONE && (abs(dx) > slop || abs(dy) > slop)) {
+                    if (mode == GestureMode.NONE && (abs(dx) > slop * 1.5f || abs(dy) > slop * 1.5f)) {
                         mode = when {
-                            // Live streams have no length: a swipe would jump back to the start.
-                            abs(dx) > abs(dy) -> if (s.length > 0) GestureMode.SEEK.also { s.seeking = true } else GestureMode.NONE
+                            // Seek only on a clearly sideways swipe, so a slightly slanted volume or
+                            // brightness swipe never jumps the video. Live streams have no length.
+                            abs(dx) > abs(dy) * 2f -> if (s.length > 0) GestureMode.SEEK.also { s.seeking = true } else GestureMode.NONE
+                            abs(dy) < abs(dx) * 2f -> GestureMode.NONE.also { dx = 0f; dy = 0f } // ambiguous diagonal: wait for a clearer direction
                             onSubs -> GestureMode.SUB
                             leftSide -> GestureMode.BRIGHTNESS
                             else -> GestureMode.VOLUME
@@ -578,7 +589,8 @@ private fun Controls(s: PlayerState, c: PlayerController, onSheet: (Sheet) -> Un
 
         Box(
             Modifier.fillMaxSize()
-                .windowInsetsPadding(WindowInsets.displayCutout)
+                // Reserve the system-bar area even while hidden so controls don't jump when it shows.
+                .windowInsetsPadding(WindowInsets.displayCutout.union(WindowInsets.navigationBarsIgnoringVisibility))
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             // ── Top bar: back + title, track tools on the right.

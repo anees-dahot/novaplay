@@ -63,6 +63,7 @@ import com.novaplay.player.ui.player.engine.SubStyle
 import com.novaplay.player.ui.player.engine.VlcEngine
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.snapshotFlow
 import com.novaplay.player.subs.OnlineSub
 import com.novaplay.player.subs.OpenSubtitles
 import com.novaplay.player.subs.FreeSubtitles
@@ -178,6 +179,12 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Like MX Player: the system bars come and go with the player controls, so the back/home
+        // buttons are one tap away instead of needing an edge swipe that also drags the video.
+        lifecycleScope.launch {
+            snapshotFlow { state.controlsVisible && !state.locked && !state.inPip }
+                .collect { if (it) showSystemBars() else hideSystemBars() }
+        }
         hideSystemBars()
         ContextCompat.registerReceiver(
             this, pipReceiver, IntentFilter(ACTION_PIP_TOGGLE), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -806,10 +813,20 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun adjustVolume(delta: Float): Int {
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        if (volumeAcc < 0) volumeAcc = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
-        volumeAcc = (volumeAcc + delta * max * 1.5f).coerceIn(0f, max.toFloat())
+        // Like MX Player: past the phone's max, keep swiping up to boost the sound to 200%.
+        if (volumeAcc < 0) {
+            val sys = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
+            volumeAcc = if (sys >= max && state.volumeBoost > 100) max * state.volumeBoost / 100f else sys
+        }
+        volumeAcc = (volumeAcc + delta * max * 1.5f).coerceIn(0f, max * 2f)
         // Some phones refuse volume changes in Do Not Disturb: ignore instead of crashing.
-        runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, volumeAcc.roundToInt(), 0) }
+        runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, volumeAcc.coerceAtMost(max.toFloat()).roundToInt(), 0) }
+        val boost = (volumeAcc / max * 100).roundToInt().coerceIn(100, 200)
+        if (boost != state.volumeBoost) {
+            state.volumeBoost = boost
+            settings.volumeBoost = boost
+            if (!released) player.volume = boost
+        }
         return (volumeAcc / max * 100).roundToInt()
     }
 
@@ -1145,7 +1162,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus && !(state.controlsVisible && !state.locked)) hideSystemBars()
     }
 
     override fun onPause() {
@@ -1223,6 +1240,10 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.renderers = emptyList()
         onFirstPlaying = null
         player.release()
+    }
+
+    private fun showSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
     }
 
     private fun hideSystemBars() {

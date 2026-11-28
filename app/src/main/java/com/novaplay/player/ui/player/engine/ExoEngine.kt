@@ -86,7 +86,7 @@ class ExoEngine(
                 DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                    .setAudioProcessors(arrayOf(delayProcessor))
+                    .setAudioProcessors(arrayOf(Downmix(), delayProcessor))
                     .build()
         }.setEnableDecoderFallback(true)
             // FFmpeg audio (AC3, E-AC3, DTS, TrueHD…) when the phone has no decoder for it.
