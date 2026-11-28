@@ -92,6 +92,10 @@ kotlin {
 
 dependencies {
     implementation("org.videolan.android:libvlc-all:3.7.7")
+    // ExoPlayer is the default engine; libVLC stays as the fallback and for casting.
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
 
     implementation(platform("androidx.compose:compose-bom:2025.08.00"))
     implementation("androidx.compose.ui:ui")

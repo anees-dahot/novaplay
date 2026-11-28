@@ -129,6 +129,8 @@ class PlayerState {
     // Online subtitles (OpenSubtitles)
     var onlineSubs by mutableStateOf<List<com.novaplay.player.subs.OnlineSub>>(emptyList())
     var onlineBusy by mutableStateOf(false)
+    /** What a longer online-subtitle job is doing right now ("Comparing 2 of 6…"). */
+    var onlineStatus by mutableStateOf<String?>(null)
     var onlineError by mutableStateOf<String?>(null)
     var onlineSearched by mutableStateOf(false)
     /** Bumped when a downloaded subtitle is loaded, so the sheet can close. */
@@ -211,6 +213,8 @@ interface PlayerController {
     fun subtitleQuery(): String
     fun searchOnlineSubs(query: String)
     fun downloadOnlineSub(sub: com.novaplay.player.subs.OnlineSub)
+    /** Downloads the top results and loads the one whose timing best follows the speech. */
+    fun pickBestOnlineSub()
     fun startCastScan()
     fun stopCastScan()
     /** null = stop casting, play on this phone. */

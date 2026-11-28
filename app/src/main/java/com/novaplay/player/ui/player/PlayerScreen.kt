@@ -1272,10 +1272,19 @@ private fun OnlineSubsSheet(s: PlayerState, c: PlayerController, close: () -> Un
         s.onlineBusy -> Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(16.dp), color = Secondary, strokeWidth = 2.dp)
             Spacer(Modifier.width(10.dp))
-            Text("Working…", style = Type.body, color = Secondary)
+            Text(s.onlineStatus ?: "Working…", style = Type.body, color = Secondary)
         }
         s.onlineError != null -> Text(s.onlineError.orEmpty(), style = Type.body, color = Color(0xFFFF6961), modifier = Modifier.padding(16.dp))
         s.onlineSearched && s.onlineSubs.isEmpty() -> Text("No subtitles found. Try a shorter name.", style = Type.body, color = Secondary, modifier = Modifier.padding(16.dp))
+    }
+    if (s.onlineSubs.isNotEmpty() && !s.onlineBusy) {
+        Group {
+            ActionRow("Best match — compare timing to the audio") { c.pickBestOnlineSub() }
+        }
+        Text(
+            "Tries the top ${minOf(8, s.onlineSubs.count { it.language == s.onlineSubs.first().language })} results and loads the one that lines up best with the speech.",
+            style = Type.footnote, color = Secondary, modifier = Modifier.padding(start = 16.dp, top = 6.dp, end = 16.dp, bottom = 12.dp),
+        )
     }
     if (s.onlineSubs.isNotEmpty()) {
         Group {

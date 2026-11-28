@@ -51,9 +51,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.Media
-import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.RendererDiscoverer
+import android.widget.FrameLayout
+import com.novaplay.player.subs.SubSync
+import com.novaplay.player.ui.player.engine.Engine
+import com.novaplay.player.ui.player.engine.EngineListener
+import com.novaplay.player.ui.player.engine.EqPresets
+import com.novaplay.player.ui.player.engine.ExoEngine
+import com.novaplay.player.ui.player.engine.SubFile
+import com.novaplay.player.ui.player.engine.SubStyle
+import com.novaplay.player.ui.player.engine.VlcEngine
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import com.novaplay.player.subs.OnlineSub
@@ -61,8 +68,6 @@ import com.novaplay.player.subs.OpenSubtitles
 import com.novaplay.player.subs.FreeSubtitles
 import org.videolan.libvlc.RendererItem
 import android.net.wifi.WifiManager
-import org.videolan.libvlc.interfaces.IMedia
-import org.videolan.libvlc.util.VLCVideoLayout
 import java.io.File
 import kotlin.math.roundToInt
 import com.novaplay.player.data.Settings as AppSettings
@@ -79,10 +84,12 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     private val state = PlayerState()
-    private lateinit var libVLC: LibVLC
-    private lateinit var player: MediaPlayer
-    private var videoLayout: VLCVideoLayout? = null
-    private var pfd: ParcelFileDescriptor? = null
+    private lateinit var player: Engine
+    private var videoHost: FrameLayout? = null
+    /** Only for casting: discovers renderers and plays to them. */
+    private var castVlc: LibVLC? = null
+    /** Video that ExoPlayer couldn't play: stays on libVLC. */
+    private var vlcOnlyFor: Uri? = null
     private lateinit var resume: ResumeStore
     private lateinit var settings: AppSettings
     private val main = Handler(Looper.getMainLooper())
@@ -105,7 +112,6 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     private val shuffleSeen = mutableSetOf<Int>()
     private var openFailures = 0
-    private var pendingSeek: Long? = null
     private var lastStepAt = 0L
     private var lastStepTarget = -1L
     private val sleepRunnable = Runnable {
@@ -116,6 +122,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
     private var discoverers: List<RendererDiscoverer> = emptyList()
     private val rendererItems = linkedMapOf<String, RendererItem>()
+    private var castItem: RendererItem? = null
     private var multicastLock: WifiManager.MulticastLock? = null
 
     @Volatile private var retriever: MediaMetadataRetriever? = null
@@ -181,10 +188,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         )
 
         createPlayer(startMs = resume.get(videoUri.toString()))
-        // Equalizer presets are native calls: only valid once LibVLC has loaded its library.
-        state.eqPresets = runCatching {
-            List(MediaPlayer.Equalizer.getPresetCount()) { MediaPlayer.Equalizer.getPresetName(it) }
-        }.getOrDefault(emptyList())
+        state.eqPresets = EqPresets.names
 
         setContent {
             AppTheme { PlayerScreen(state, this) }
@@ -215,12 +219,16 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         return true
     }
 
-    // ---------- libVLC setup ----------
+    // ---------- engine setup ----------
 
-    private fun createPlayer(startMs: Long) {
+    private fun subStyle() = SubStyle(
+        px = state.subPx, pos = state.subPos, color = state.subColor, background = state.subBackground,
+        outline = state.subOutline, shadow = state.subShadow, bold = state.subBold, font = state.subFont,
+        override = state.subOverride,
+    )
+
+    private fun createPlayer(startMs: Long, renderer: RendererItem? = castItem) {
         released = false
-        audioApplied = false
-        appliedEq = null
         // Fresh player (new video, loop, or restart): remembered tracks must be applied again.
         trackRestoreFor = null
         spuRestoreFor = null
@@ -234,135 +242,96 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         state.queue = titles
         state.playlistIndex = index
         state.playlistSize = uris.size
-        libVLC = LibVLC(
-            this,
-            ArrayList(listOf(
-                // Let late video frames drop: forcing every frame makes the audio wait for the decoder to
-                // catch up after a seek or a speed change, which is heard as a 2-3 s stall.
-                "--audio-time-stretch",
-                "--rtsp-tcp",
-                "--sub-text-scale=${(state.subPx * 100f / subBasePx()).roundToInt().coerceIn(10, 500)}",
-                "--sub-margin=${(state.subPos * subRefHeight()).roundToInt()}",
-                "--freetype-color=${SUB_COLORS[state.subColor].second}",
-                "--freetype-background-opacity=${if (state.subBackground) 170 else 0}",
-                "--freetype-background-color=0",
-                "--freetype-outline-thickness=${if (state.subBackground) 0 else state.subOutline * 2}",
-                "--freetype-shadow-opacity=${if (state.subShadow) 128 else 0}",
-            ) + (if (state.subBold) listOf("--freetype-bold") else emptyList())
-              + (SUB_FONTS[state.subFont].second.takeIf { it.isNotEmpty() }?.let { listOf("--freetype-font=$it") } ?: emptyList())),
-        )
-        player = MediaPlayer(libVLC)
-        player.setEventListener(::onPlayerEvent)
 
-        val media = try {
-            openMedia()
+        val start = if (startMs > RESUME_MIN_MS) startMs else 0L
+        player = try {
+            // ExoPlayer seeks and changes speed without stalling the sound; libVLC plays the files it
+            // can't, and is the only one that can cast.
+            if (renderer != null || vlcOnlyFor == videoUri) {
+                VlcEngine(this, videoUri, start, state.hwDecoder, subStyle(), engineListener, castVlc.takeIf { renderer != null }, renderer)
+            } else ExoEngine(this, videoUri, start, subStyle(), engineListener)
         } catch (e: Exception) {
+            released = true
             Toast.makeText(this, "Can't open video: ${e.message}", Toast.LENGTH_LONG).show()
             // Skip to the next one, but give up once every video failed (shuffle would loop forever).
             if (state.hasNext && ++openFailures < uris.size) main.post { playNext() } else finish()
             return
         }
         openFailures = 0
-        media.setHWDecoderEnabled(state.hwDecoder, false)
-        if (startMs > RESUME_MIN_MS) media.addOption(":start-time=${startMs / 1000.0}")
         state.resumedFrom = if (startMs > RESUME_MIN_MS) startMs else -1L
-        player.media = media
-        media.release()
+        player.rate = state.rate
+        player.volume = state.volumeBoost
+        player.audioDelayMs = state.audioDelayMs
+        player.setEqualizer(state.eqPreset, state.bassDb)
         // Re-attach a subtitle file the user picked for this video before.
         settings.subtitleFor(videoUri.toString())?.let { path ->
-            if (File(path).exists()) player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(File(path))), true)
+            if (File(path).exists()) runCatching { player.addSubtitle(File(path)) }
         }
 
-        // On first launch the view doesn't exist yet; createVideoView attaches + plays.
-        videoLayout?.let { attachAndPlay(it) }
-    }
-
-    private fun openMedia(): Media =
-        if (videoUri.scheme == "content") {
-            pfd?.close()
-            val fd = contentResolver.openFileDescriptor(videoUri, "r") ?: error("no file descriptor")
-            pfd = fd
-            Media(libVLC, fd.fileDescriptor)
-        } else {
-            Media(libVLC, videoUri)
-        }
-
-    private fun attachAndPlay(layout: VLCVideoLayout) {
-        player.attachViews(layout, null, true, false)
-        applyScale(state.scale)
-        player.play()
+        // On first launch the view doesn't exist yet; createVideoView attaches.
+        videoHost?.let { player.attach(it); player.setScale(state.scale) }
     }
 
     override fun createVideoView(context: Context): View =
-        VLCVideoLayout(context).also {
-            videoLayout = it
-            if (!released) attachAndPlay(it)
-            // Coming back from another app gives us a new surface. libVLC only turns the picture back on by
-            // itself when the video was playing, so a paused video stayed black: do it ourselves.
-            it.findSurfaceView()?.holder?.addCallback(object : android.view.SurfaceHolder.Callback {
-                override fun surfaceCreated(h: android.view.SurfaceHolder) { main.post(::restoreVideo) }
-                override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, hgt: Int) {}
-                override fun surfaceDestroyed(h: android.view.SurfaceHolder) {}
-            })
+        FrameLayout(context).also {
+            it.setBackgroundColor(android.graphics.Color.BLACK)
+            videoHost = it
+            if (!released) { player.attach(it); player.setScale(state.scale) }
         }
 
-    private fun restoreVideo() {
-        if (released || !::player.isInitialized) return
-        if (player.videoTrack == -1 && player.videoTracksCount > 0) {
-            player.setVideoTrackEnabled(true)
-            // Paused: nothing is decoded, so the new surface stays empty. A seek to "here" draws the frame.
-            if (!player.isPlaying && player.time > 0) main.postDelayed({
-                if (!released && !player.isPlaying) player.time = player.time
-            }, 200)
+    private val engineListener = object : EngineListener {
+        override fun onPlaying() {
+            if (released) return
+            state.playing = true
+            requestAudioFocus()
+            if (player.rate != state.rate && !state.holdingFast) player.rate = state.rate
+            onFirstPlaying?.let { onFirstPlaying = null; it() }
+            refreshTracks()
+            loadChapters()
+            onPlayStateChanged()
         }
-    }
 
-    private fun onPlayerEvent(event: MediaPlayer.Event) {
-        if (released) return
-        when (event.type) {
-            MediaPlayer.Event.Playing -> {
-                state.playing = true
-                restoreVideo()
-                requestAudioFocus()
-                if (player.rate != state.rate && !state.holdingFast) player.rate = state.rate
-                // Only once per player: re-setting the equalizer restarts libVLC's audio chain (a gap).
-                if (!audioApplied) { audioApplied = true; applyAudio() }
-                pendingSeek?.let { player.time = it; pendingSeek = null }
-                refreshTracks()
-                loadChapters()
-                onPlayStateChanged()
-            }
-            MediaPlayer.Event.Paused, MediaPlayer.Event.Stopped -> {
-                state.playing = false
-                onPlayStateChanged()
-            }
-            MediaPlayer.Event.Vout -> autoOrient()
-            MediaPlayer.Event.LengthChanged -> {
-                state.length = event.lengthChanged
-                loadChapters()
-            }
-            MediaPlayer.Event.TimeChanged -> {
-                val t = event.timeChanged
-                // After a seek libVLC still reports a few old times; ignore them so the bar doesn't jump back.
-                val settled = SystemClock.uptimeMillis() > seekGuardUntil || abs(t - seekTarget) < 1_500
-                if (!state.seeking && settled) state.time = t
-                if (t > 0) state.started = true
-                // A-B repeat: jump back to A once we pass B.
-                if (state.abStart >= 0 && state.abEnd > state.abStart && t >= state.abEnd) {
-                    player.time = state.abStart
-                }
-            }
-            MediaPlayer.Event.ESAdded, MediaPlayer.Event.ESDeleted, MediaPlayer.Event.ESSelected -> refreshTracks()
-            // Don't tear the player down inside its own callback; post it.
-            MediaPlayer.Event.EndReached -> main.post { onEnded() }
-            MediaPlayer.Event.EncounteredError -> main.post {
-                Toast.makeText(this, "Playback error", Toast.LENGTH_LONG).show()
-                // Software decoding often fixes black screen / codec issues. Only for this session:
-                // one bad file shouldn't switch the user's saved preference.
-                if (state.hwDecoder) { state.hwDecoder = false; state.flash("Switched to software decoder"); restartSameVideo(afterError = true) }
-                else finish()
-            }
+        override fun onPaused() {
+            if (released) return
+            state.playing = false
+            onPlayStateChanged()
         }
+
+        override fun onEnded() { this@PlayerActivity.onEnded() }
+
+        override fun onError(unsupported: Boolean, message: String?) {
+            if (released) return
+            if (!player.isVlc && state.castingTo == null) {
+                // ExoPlayer can't play this one: libVLC plays nearly everything.
+                vlcOnlyFor = videoUri
+                restartSameVideo(afterError = true)
+                return
+            }
+            Toast.makeText(this@PlayerActivity, "Playback error", Toast.LENGTH_LONG).show()
+            // Software decoding often fixes black screen / codec issues. Only for this session:
+            // one bad file shouldn't switch the user's saved preference.
+            if (state.hwDecoder) { state.hwDecoder = false; state.flash("Switched to software decoder"); restartSameVideo(afterError = true) }
+            else finish()
+        }
+
+        override fun onTime(ms: Long) {
+            if (released) return
+            // After a seek libVLC still reports a few old times; ignore them so the bar doesn't jump back.
+            val settled = SystemClock.uptimeMillis() > seekGuardUntil || abs(ms - seekTarget) < 1_500
+            if (!state.seeking && settled) state.time = ms
+            if (ms > 0) state.started = true
+            // A-B repeat: jump back to A once we pass B.
+            if (state.abStart >= 0 && state.abEnd > state.abStart && ms >= state.abEnd) seekTo(state.abStart)
+        }
+
+        override fun onLength(ms: Long) {
+            if (released) return
+            state.length = ms
+            loadChapters()
+        }
+
+        override fun onTracksChanged() { if (!released) refreshTracks() }
+        override fun onVideoSize() { if (!released) autoOrient() }
     }
 
     private val bookmarkPrefs by lazy { getSharedPreferences("bookmarks", MODE_PRIVATE) }
@@ -426,8 +395,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private fun restoreTracks() {
         val key = videoUri.toString()
         if (trackRestoreFor != videoUri) {
-            val a = player.audioTracks
-            if (!a.isNullOrEmpty()) {
+            val a = player.audioTracks()
+            if (a.isNotEmpty()) {
                 trackRestoreFor = videoUri
                 settings.trackFor(key, "a")?.let { id -> if (a.any { it.id == id }) player.audioTrack = id }
             }
@@ -437,7 +406,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             when {
                 id == null -> spuRestoreFor = videoUri
                 id == -1 -> { player.spuTrack = -1; spuRestoreFor = videoUri }
-                player.spuTracks?.any { it.id == id } == true -> { player.spuTrack = id; spuRestoreFor = videoUri }
+                player.spuTracks().any { it.id == id } -> { player.spuTrack = id; spuRestoreFor = videoUri }
             }
         }
     }
@@ -445,12 +414,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     /** Portrait videos open in portrait, wide ones in landscape — unless the user rotated by hand. */
     private fun autoOrient() {
         if (orientationFor == videoUri || userRotated) return
-        val t = player.currentVideoTrack ?: return
-        if (t.width <= 0 || t.height <= 0) return
+        val t = player.videoInfo() ?: return
         orientationFor = videoUri
-        val rotated = t.orientation == org.videolan.libvlc.interfaces.IMedia.VideoTrack.Orientation.RightTop ||
-            t.orientation == org.videolan.libvlc.interfaces.IMedia.VideoTrack.Orientation.LeftBottom
-        val (w, h) = if (rotated) t.height to t.width else t.width to t.height
+        val w = t.width; val h = t.height
         requestedOrientation = if (h > w) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
             else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     }
@@ -458,17 +424,14 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private fun refreshTracks() {
         restoreTracks()
         autoOrient()
-        state.audioTracks = player.audioTracks?.map { Track(it.id, it.name) } ?: emptyList()
-        state.spuTracks = player.spuTracks?.map { Track(it.id, it.name) } ?: emptyList()
+        state.audioTracks = player.audioTracks()
+        state.spuTracks = player.spuTracks()
         state.audioTrack = player.audioTrack
         state.spuTrack = player.spuTrack
     }
 
     private fun loadChapters() {
-        state.chapters = player.getChapters(-1)
-            ?.filter { it.timeOffset >= 0 }
-            ?.mapIndexed { i, c -> Chapter(c.timeOffset, c.name?.takeIf { it.isNotBlank() } ?: "Chapter ${i + 1}") }
-            ?: emptyList()
+        state.chapters = player.chapters()
     }
 
     /** Switches to another video in the playlist. */
@@ -483,7 +446,10 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         PlaybackService.update(this)
     }
 
-    /** Restarts the same video at the same spot (needed for libVLC start-up options). */
+    /** Runs once when the next player starts playing. */
+    private var onFirstPlaying: (() -> Unit)? = null
+
+    /** Restarts the same video at the same spot (engine switch, decoder change, libVLC start-up options). */
     private fun restartSameVideo(afterError: Boolean = false) {
         if (released) return
         // After a playback error libVLC reports no time and "not playing": use what the UI last showed and keep playing.
@@ -496,16 +462,12 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (released) return
         state.resumedFrom = -1L // not a resume: no "Start over" pill
         // Short positions skip the start-time option (resume threshold), so seek once playing.
-        if (pos in 1..RESUME_MIN_MS) pendingSeek = pos
-        player.setEventListener { e ->
-            onPlayerEvent(e)
-            if (e.type == MediaPlayer.Event.Playing) {
-                if (wasPaused) player.pause()
-                if (audioId >= 0) player.audioTrack = audioId
-                player.spuTrack = spu
-                player.spuDelay = state.spuDelayMs * 1000
-                player.setEventListener(::onPlayerEvent)
-            }
+        if (pos in 1..RESUME_MIN_MS) player.seek(pos, false)
+        onFirstPlaying = {
+            if (wasPaused) player.pause()
+            if (audioId >= 0) player.audioTrack = audioId
+            player.spuTrack = spu
+            player.spuDelayMs = state.spuDelayMs
         }
     }
 
@@ -524,7 +486,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     private fun seekTo(ms: Long, fast: Boolean) {
         if (released) return
         val target = if (state.length > 0) ms.coerceIn(0, state.length) else ms.coerceAtLeast(0)
-        player.setTime(target, fast)
+        player.seek(target, fast)
         state.time = target
         seekTarget = target
         seekGuardUntil = SystemClock.uptimeMillis() + 800
@@ -532,7 +494,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     override fun seekBy(deltaMs: Long) {
         if (released) return
-        // Quick repeated taps: libVLC still reports the old time, so add on top of the last target instead.
+        // Quick repeated taps: the engine may still report the old time, so add on top of the last target instead.
         val base = if (SystemClock.uptimeMillis() < seekGuardUntil) seekTarget else player.time
         seekTo(base + deltaMs, fast = state.fastSeek)
     }
@@ -556,15 +518,9 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         changeRate(rateBeforeHold)
     }
 
-    /**
-     * libVLC 3 re-bases its clock on a speed change and then finds ~1 s of already-queued audio "too
-     * early/late": it plays silence or flushes until it catches up (the stall heard on 2x start/end).
-     * Seeking to where we are right away throws that stale audio out and resyncs in a few frames.
-     */
     private fun changeRate(rate: Float) {
         if (released || player.rate == rate) return
         player.rate = rate
-        if (player.isPlaying && player.length > 0) player.setTime(player.time, false)
     }
 
     override fun setScale(scale: VideoScale) {
@@ -575,8 +531,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     private fun applyScale(scale: VideoScale) {
-        player.aspectRatio = scale.ratio
-        player.videoScale = scale.vlc
+        if (!released) player.setScale(scale)
     }
 
     override fun selectAudio(id: Int) {
@@ -594,7 +549,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun pickSubtitleFile() = subtitlePicker.launch(arrayOf("*/*"))
 
     private fun loadExternalSubtitle(uri: Uri) {
-        // libVLC reads subtitle files by path, so copy the picked file into the app cache first.
+        // Subtitle files are read by path, so copy the picked file into app storage first.
         val name = displayName(uri) ?: "subtitle.srt"
         val dir = File(filesDir, "subs").apply { mkdirs() } // kept so the subtitle reloads next time
         val file = File(dir, "${videoUri.toString().hashCode()}_$name")
@@ -602,18 +557,34 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             contentResolver.openInputStream(uri)!!.use { input ->
                 file.outputStream().use { input.copyTo(it) }
             }
-            player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(file)), true)
+            player.addSubtitle(file)
             settings.setSubtitleFor(videoUri.toString(), file.absolutePath)
         }.onSuccess {
             state.flash("Subtitle loaded")
+            autoSyncLoaded(file)
         }.onFailure {
             Toast.makeText(this, "Couldn't load subtitle", Toast.LENGTH_SHORT).show()
         }
     }
 
+    /** Checks a just-loaded subtitle against the audio and swaps in a re-timed copy if it's clearly off. */
+    private fun autoSyncLoaded(file: File) {
+        val key = videoUri.toString()
+        lifecycleScope.launch {
+            val speech = runCatching { speechForSync() }.getOrNull()
+            speech ?: return@launch
+            val cues = withContext(Dispatchers.IO) { runCatching { SubFile.read(file) }.getOrDefault(emptyList()) }
+            val fit = SubSync.fit(speech, cues)
+            fit ?: return@launch
+            if (released || key != videoUri.toString() || !fit.confident) return@launch
+            if (kotlin.math.abs(fit.offsetMs) < 150 && fit.scale == 1.0) return@launch
+            loadOnlineFile(file, fit, null)
+        }
+    }
+
     override fun shiftSpuDelay(deltaMs: Long) {
         state.spuDelayMs += deltaMs
-        player.spuDelay = state.spuDelayMs * 1000 // libVLC wants microseconds
+        if (!released) player.spuDelayMs = state.spuDelayMs
     }
 
     /** libVLC's default subtitle size: 6.25% of the picture height. */
@@ -622,52 +593,12 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     private val subRestart = Runnable { restartSameVideo() }
 
-    /**
-     * With "Override file style" on, a styled ASS/SSA file is rewritten as plain SRT (same timing and text),
-     * because libVLC draws styled subtitles with the file's own font, size and colour.
-     */
-    private fun plainSubtitle(src: File): File {
-        if (!state.subOverride || src.extension.lowercase() !in setOf("ass", "ssa")) return src
-        val out = File(File(cacheDir, "plain").apply { mkdirs() }, "${src.nameWithoutExtension}.srt")
-        if (out.exists() && out.lastModified() >= src.lastModified()) return out
-        return runCatching {
-            fun stamp(t: String): String { // 0:01:02.50 -> 00:01:02,500
-                val parts = t.trim().split('.')
-                val hms = parts[0].split(':').map { it.toInt() }
-                return "%02d:%02d:%02d,%s".format(hms[0], hms[1], hms[2], parts.getOrElse(1) { "0" }.padEnd(3, '0').take(3))
-            }
-            val tags = Regex("\\{[^}]*\\}")
-            var inEvents = false
-            var fields = listOf("layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text")
-            var n = 0
-            val sb = StringBuilder()
-            src.readLines().forEach { raw ->
-                val line = raw.trim().removePrefix("\uFEFF")
-                when {
-                    line.startsWith("[") -> inEvents = line.equals("[Events]", ignoreCase = true)
-                    inEvents && line.startsWith("Format:") ->
-                        fields = line.substringAfter(':').split(',').map { it.trim().lowercase() }
-                    inEvents && line.startsWith("Dialogue:") -> {
-                        val cols = line.substringAfter(':').split(",", limit = fields.size)
-                        val raw2 = cols.getOrNull(fields.indexOf("text")) ?: return@forEach
-                        if ("\\p1" in raw2) return@forEach // vector drawing, not text
-                        val text = raw2.replace(tags, "").replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").trim()
-                        if (text.isEmpty()) return@forEach
-                        sb.append(++n).append('\n')
-                            .append(stamp(cols[fields.indexOf("start")])).append(" --> ").append(stamp(cols[fields.indexOf("end")])).append('\n')
-                            .append(text).append("\n\n")
-                    }
-                }
-            }
-            if (n == 0) src else out.also { it.writeText(sb.toString()) }
-        }.getOrDefault(src)
-    }
-
     override fun applySubStyle() {
         settings.subColor = state.subColor; settings.subBackground = state.subBackground; settings.subBold = state.subBold
         settings.subFont = state.subFont; settings.subPx = state.subPx; settings.subOutline = state.subOutline
         settings.subShadow = state.subShadow; settings.subOverride = state.subOverride
-        // Subtitle options only apply to a new libVLC instance; wait for the taps to stop before reloading.
+        if (released || player.setSubStyle(subStyle())) return
+        // libVLC reads subtitle options only at start; wait for the taps to stop before reloading.
         main.removeCallbacks(subRestart)
         main.postDelayed(subRestart, 450)
     }
@@ -675,6 +606,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun setSubPosition(fraction: Float) {
         state.subPos = fraction.coerceIn(0f, 0.85f)
         settings.subPos = (state.subPos * 1000).roundToInt()
+        if (released || player.setSubStyle(subStyle())) return
         main.removeCallbacks(subRestart)
         restartSameVideo()
     }
@@ -696,7 +628,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             state.abEnd < 0 -> {
                 if (player.time <= state.abStart + 500) { state.flash("B must be after A"); return }
                 state.abEnd = player.time
-                player.time = state.abStart
+                seekTo(state.abStart)
                 state.flash("Repeating A–B")
             }
             else -> { state.abStart = -1; state.abEnd = -1; state.flash("A–B repeat off") }
@@ -796,7 +728,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     }
 
     override fun takeScreenshot() {
-        val surface = videoLayout?.findSurfaceView() ?: return
+        val surface = if (released) return else player.surfaceView() ?: return
         if (surface.width == 0 || surface.height == 0) return
         val bmp = Bitmap.createBitmap(surface.width, surface.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(surface, bmp, { result ->
@@ -811,12 +743,6 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
                 else Toast.makeText(this@PlayerActivity, "Screenshot failed", Toast.LENGTH_SHORT).show()
             }
         }, main)
-    }
-
-    private fun View.findSurfaceView(): SurfaceView? {
-        if (this is SurfaceView) return this
-        if (this is ViewGroup) for (i in 0 until childCount) getChildAt(i).findSurfaceView()?.let { return it }
-        return null
     }
 
     private fun saveScreenshot(bmp: Bitmap): Boolean {
@@ -930,13 +856,11 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
     override fun frameStep(forward: Boolean) {
         if (released) return
         if (player.isPlaying) player.pause()
-        // Forward: libVLC's real next-frame is exact. Seeking is the fallback (and the only way back).
-        if (forward && FrameStepper.next(player)) { lastStepTarget = -1; state.bump(); return }
-        val track = runCatching { player.currentVideoTrack }.getOrNull()
-        val fps = if (track != null && track.frameRateDen > 0 && track.frameRateNum > 0)
-            track.frameRateNum.toFloat() / track.frameRateDen else 30f
+        // Forward on libVLC: its real next-frame is exact. Seeking is the fallback (and the only way back).
+        if (forward && player.nativeFrameStep()) { lastStepTarget = -1; state.bump(); return }
+        val fps = player.videoInfo()?.fps?.takeIf { it > 1f } ?: 30f
         val frameMs = 1000.0 / fps
-        // libVLC's reported time lags while paused, so keep stepping from our own last target.
+        // The reported time can lag while paused, so keep stepping from our own last target.
         val now = SystemClock.uptimeMillis()
         val base = if (now - lastStepAt < 5_000 && lastStepTarget >= 0 && abs(player.time - lastStepTarget) < 1_000) lastStepTarget else player.time
         val frame = Math.floor(base / frameMs).toLong() + if (forward) 1 else -1
@@ -944,7 +868,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         val target = ((frame.coerceAtLeast(0) + 0.5) * frameMs).toLong()
         lastStepAt = now
         lastStepTarget = target
-        player.setTime(target, false) // precise (non-fast) seek so we land on that exact frame
+        player.seek(target, false) // precise (non-fast) seek so we land on that exact frame
         state.time = target
         seekTarget = target
         seekGuardUntil = SystemClock.uptimeMillis() + 800
@@ -953,36 +877,16 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     // ---------- Audio ----------
 
-    private var audioApplied = false
-    /** Last equalizer actually handed to libVLC, so unchanged settings never restart the audio. */
-    private var appliedEq: Pair<Int, Int>? = null
-
     private fun applyAudio() {
         if (released) return
         player.volume = state.volumeBoost
-        player.audioDelay = state.audioDelayMs * 1000
-        val want = state.eqPreset to state.bassDb
-        if (want == appliedEq) return
-        val hadEq = appliedEq != null && appliedEq != (-1 to 0)
-        appliedEq = want
-        if (state.eqPreset < 0 && state.bassDb == 0) {
-            if (hadEq) player.setEqualizer(null)
-            return
-        }
-        val eq = if (state.eqPreset >= 0) MediaPlayer.Equalizer.createFromPreset(state.eqPreset)
-        else MediaPlayer.Equalizer.create()
-        // Bass boost lifts the lowest bands on top of the chosen preset.
-        val b = state.bassDb.toFloat()
-        listOf(0 to 1f, 1 to 0.75f, 2 to 0.35f).forEach { (band, k) ->
-            eq.setAmp(band, (eq.getAmp(band) + b * k).coerceIn(-20f, 20f))
-        }
-        if (b > 0) eq.preAmp = (eq.preAmp - b * 0.4f).coerceIn(-20f, 20f) // headroom so boosted bass doesn't clip
-        player.setEqualizer(eq)
+        player.audioDelayMs = state.audioDelayMs
+        player.setEqualizer(state.eqPreset, state.bassDb)
     }
 
     override fun shiftAudioDelay(deltaMs: Long) {
         state.audioDelayMs += deltaMs
-        if (!released) player.audioDelay = state.audioDelayMs * 1000
+        if (!released) player.audioDelayMs = state.audioDelayMs
     }
 
     override fun setVolumeBoost(percent: Int) {
@@ -1044,20 +948,82 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (state.onlineBusy) return
         state.onlineBusy = true
         state.onlineError = null
+        state.onlineStatus = "Downloading…"
         val key = videoUri.toString()
         lifecycleScope.launch {
-            runCatching { OpenSubtitles.download(sub, File(filesDir, "subs")) }
-                .onSuccess { file ->
-                    if (!released) {
-                        player.addSlave(IMedia.Slave.Type.Subtitle, Uri.fromFile(plainSubtitle(file)), true)
-                        settings.setSubtitleFor(key, file.absolutePath)
-                        state.flash("Subtitle loaded")
-                        state.onlineLoaded++
-                    }
-                }
-                .onFailure { state.onlineError = it.message ?: "Download failed" }
+            runCatching {
+                val file = OpenSubtitles.download(sub, File(filesDir, "subs"))
+                state.onlineStatus = "Matching to the audio…"
+                val speech = speechForSync()
+                val fit = speech?.let { sp -> withContext(Dispatchers.IO) { SubFile.read(file) }.let { SubSync.fit(sp, it) } }
+                file to fit
+            }.onSuccess { (file, fit) ->
+                if (!released && key == videoUri.toString()) loadOnlineFile(file, fit, null)
+            }.onFailure { state.onlineError = it.message ?: "Download failed" }
+            state.onlineStatus = null
             state.onlineBusy = false
         }
+    }
+
+    /**
+     * Downloads the top few results, checks how well each one's timing follows the speech in this
+     * video, and loads the best one (shifted so it lines up).
+     */
+    override fun pickBestOnlineSub() {
+        if (state.onlineBusy || state.onlineSubs.isEmpty()) return
+        state.onlineBusy = true
+        state.onlineError = null
+        val key = videoUri.toString()
+        // Same language as the top result (what the search ranked first), best-known first.
+        val lang = state.onlineSubs.first().language
+        val pool = state.onlineSubs.filter { it.language == lang }.take(8)
+        lifecycleScope.launch {
+            runCatching {
+                state.onlineStatus = "Listening to the audio…"
+                val speech = speechForSync() ?: error("Couldn't read this video's audio")
+                var best: Triple<OnlineSub, File, SubSync.Fit>? = null
+                pool.forEachIndexed { i, sub ->
+                    state.onlineStatus = "Comparing ${i + 1} of ${pool.size}…"
+                    val file = runCatching { OpenSubtitles.download(sub, File(filesDir, "subs")) }.getOrNull() ?: return@forEachIndexed
+                    val cues = withContext(Dispatchers.IO) { runCatching { SubFile.read(file) }.getOrDefault(emptyList()) }
+                    val fit = SubSync.fit(speech, cues) ?: return@forEachIndexed
+                    // Exact file-hash matches get a small edge: made for this very release.
+                    val b = best
+                    val bonus = if (sub.exact) 0.02 else 0.0
+                    if (b == null || fit.score + bonus > b.third.score + (if (b.first.exact) 0.02 else 0.0)) best = Triple(sub, file, fit)
+                }
+                best ?: error("Couldn't download any of them")
+            }.onSuccess { (sub, file, fit) ->
+                if (!released && key == videoUri.toString()) loadOnlineFile(file, fit, sub)
+            }.onFailure { state.onlineError = it.message ?: "Couldn't pick a subtitle" }
+            state.onlineStatus = null
+            state.onlineBusy = false
+        }
+    }
+
+    private suspend fun speechForSync(): SubSync.Speech? {
+        val uri = videoUri
+        if (uri.scheme != "content" && uri.scheme != "file") return null
+        return SubSync.speech(this, uri, state.length)
+    }
+
+    /** Loads a downloaded subtitle, re-timed to the audio when the match is clear. */
+    private suspend fun loadOnlineFile(file: File, fit: SubSync.Fit?, picked: OnlineSub?) {
+        val key = videoUri.toString()
+        val shift = fit?.takeIf { it.confident && (kotlin.math.abs(it.offsetMs) >= 150 || it.scale != 1.0) }
+        val use = if (shift == null) file else withContext(Dispatchers.IO) {
+            val out = File(file.parentFile, "synced_${file.nameWithoutExtension}.srt")
+            SubFile.writeSrt(SubFile.retime(SubFile.read(file), shift.offsetMs, shift.scale), out)
+            out
+        }
+        runCatching { player.addSubtitle(use) }.onFailure { state.onlineError = "Couldn't load subtitle"; return }
+        settings.setSubtitleFor(key, use.absolutePath)
+        // The file is now timed to the audio: any manual delay from before would push it off again.
+        if (shift != null) { state.spuDelayMs = 0; player.spuDelayMs = 0 }
+        val match = fit?.let { " · ${(it.score.coerceIn(0.0, 1.0) * 100).roundToInt()}% match" }.orEmpty()
+        val synced = shift?.let { " · synced ${if (it.offsetMs >= 0) "+" else "−"}${"%.1f".format(kotlin.math.abs(it.offsetMs) / 1000.0)}s" }.orEmpty()
+        state.flash((if (picked != null) "Best match loaded" else "Subtitle loaded") + synced + match)
+        state.onlineLoaded++
     }
 
     // ---------- Casting (Chromecast etc. via libVLC renderers) ----------
@@ -1068,9 +1034,10 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
                 .createMulticastLock("novaplay-cast").apply { setReferenceCounted(false); acquire() }
         }.getOrNull()
-        discoverers = RendererDiscoverer.list(libVLC).mapNotNull { d ->
+        val vlc = castVlc ?: runCatching { LibVLC(this, ArrayList(VlcEngine.options(subStyle()))) }.getOrNull()?.also { castVlc = it } ?: return
+        discoverers = RendererDiscoverer.list(vlc).mapNotNull { d ->
             runCatching {
-                RendererDiscoverer(libVLC, d.name).also { rd ->
+                RendererDiscoverer(vlc, d.name).also { rd ->
                     rd.setEventListener { e ->
                         when (e.type) {
                             RendererDiscoverer.Event.ItemAdded -> e.item?.let { rendererItems[it.displayName] = it }
@@ -1096,16 +1063,21 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (released) return
         val item = name?.let { rendererItems[it] }
         if (name != null && item == null) return
-        val pos = player.time
-        player.setRenderer(item)
+        val pos = player.time.takeIf { it > 0 } ?: state.time
+        val wasPaused = !player.isPlaying
+        // Casting runs on libVLC (with the same instance that found the device); a renderer only takes
+        // effect when the media starts, so reopen it at the same spot.
+        castItem = item
         state.castingTo = name
-        // A renderer only takes effect when the media (re)starts, so reopen it at the same spot.
-        val media = runCatching { openMedia() }.getOrNull() ?: return
-        media.setHWDecoderEnabled(state.hwDecoder, false)
-        player.media = media
-        media.release()
-        pendingSeek = pos
-        player.play()
+        val keep = rendererItems.toMap()
+        player.release()
+        released = true
+        createPlayer(startMs = pos, renderer = item)
+        if (released) return
+        rendererItems.putAll(keep)
+        state.resumedFrom = -1L
+        if (pos in 1..RESUME_MIN_MS) player.seek(pos, false)
+        if (wasPaused) onFirstPlaying = { player.pause() }
         state.flash(if (name != null) "Casting to $name" else "Playing on this phone")
     }
 
@@ -1137,7 +1109,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
 
     /** PiP window matches the video's shape (Android allows 1:2.39 … 2.39:1). */
     private fun videoAspect(): Rational {
-        val track = runCatching { if (released) null else player.currentVideoTrack }.getOrNull()
+        val track = runCatching { if (released) null else player.videoInfo() }.getOrNull()
         val w = track?.width ?: 0
         val h = track?.height ?: 0
         if (w <= 0 || h <= 0) return Rational(16, 9)
@@ -1184,6 +1156,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
             saveResume()
             player.volume = 0
             player.pause()
+            releasePlayer()
             return
         }
         // Start the notification service while we're still allowed to (app still visible).
@@ -1195,7 +1168,7 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         if (released) return
         saveResume()
         if (state.backgroundPlay && player.isPlaying && !isFinishing) {
-            player.setVideoTrackEnabled(false) // audio only while hidden
+            player.setVideoEnabled(false) // audio only while hidden
             return
         }
         wasPlaying = player.isPlaying && !state.inPip
@@ -1207,15 +1180,11 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         super.onStart()
         PlaybackService.stop(this)
         if (released) return
-        // Leaving the app destroys the surface and libVLC then drops its views for good: without attaching
-        // them again the picture stays black until the video is reopened.
-        val layout = videoLayout
-        if (layout != null && !player.vlcVout.areViewsAttached()) {
-            player.attachViews(layout, null, true, false)
-            applyScale(state.scale)
-        }
-        restoreVideo()
-        if (wasPlaying && videoLayout != null && !player.isPlaying) player.play()
+        // Leaving the app destroys the surface (libVLC then drops its views for good) and background
+        // play turned the picture off: bring both back.
+        videoHost?.let { player.attach(it); applyScale(state.scale) }
+        player.onSurfaceRestored()
+        if (wasPlaying && videoHost != null && !player.isPlaying) player.play()
         wasPlaying = true
     }
 
@@ -1224,6 +1193,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         main.removeCallbacks(subRestart)
         if (!isChangingConfigurations) saveResume()
         releasePlayer()
+        castVlc?.let { runCatching { it.release() } }
+        castVlc = null
         closeRetriever()
         runCatching { unregisterReceiver(pipReceiver) }
         runCatching { unregisterReceiver(noisyReceiver) }
@@ -1250,13 +1221,8 @@ class PlayerActivity : ComponentActivity(), PlayerController, BackgroundPlayer {
         stopCastScan()
         rendererItems.clear()
         state.renderers = emptyList()
-        player.setEventListener(null)
-        player.stop()
-        player.detachViews()
+        onFirstPlaying = null
         player.release()
-        libVLC.release()
-        pfd?.close()
-        pfd = null
     }
 
     private fun hideSystemBars() {
